@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cyber Threat Consensus Board</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Cyber Threat Consensus Board</h1>
+      <p id="me" class="me">connecting&hellip;</p>
+      <p><a href="/readme/">About this app</a></p>
+    </header>
+
+    <main>
+      <section id="incidents" aria-label="Open incidents">
+        <h2>Open incidents</h2>
+        <p id="no-incidents" class="muted" hidden>No open incidents right now &mdash; one will appear shortly.</p>
+        <div id="incident-list"></div>
+      </section>
+
+      <section id="report" aria-label="Report a threat">
+        <h2>Report a threat</h2>
+        <form id="report-form">
+          <label>
+            Title
+            <input type="text" id="report-title" maxlength="200" required />
+          </label>
+          <label>
+            Category
+            <select id="report-category">
+              <option value="login">Login</option>
+              <option value="exfiltration">Exfiltration</option>
+              <option value="malware">Malware</option>
+              <option value="network">Network</option>
+              <option value="insider">Insider</option>
+            </select>
+          </label>
+          <label>
+            Description
+            <textarea id="report-description" maxlength="1000" required></textarea>
+          </label>
+          <button type="submit">Submit incident</button>
+        </form>
+      </section>
+
+      <section id="leaderboard" aria-label="Analyst leaderboard">
+        <h2>Analysts</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Codename</th>
+              <th>Votes</th>
+              <th>Agreement</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="leaderboard-body"></tbody>
+        </table>
+      </section>
+
+      <section id="history" aria-label="Resolved incident history">
+        <h2>Resolved history</h2>
+        <div id="history-list"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
