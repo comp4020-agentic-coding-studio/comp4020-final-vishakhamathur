@@ -4,14 +4,20 @@
   "type": "module",
   "scripts": {
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
+    "dev": "node server/index.ts",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
     "check:evidence": "node scripts/check-evidence.ts",
     "test": "vitest run"
   },
+  "dependencies": {
+    "marked": "^16.4.1",
+    "ws": "^8.19.0"
+  },
   "devDependencies": {
     "@types/jsdom": "^30.0.0",
     "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
     "jsdom": "^30.1.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.1"
