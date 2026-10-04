@@ -240,9 +240,9 @@ export class Db {
   resolveIncident(
     id: string,
     fields: {
-      consensusSeverity: number;
-      consensusLikelihood: number;
-      consensusScore: number;
+      consensusSeverity: number | null;
+      consensusLikelihood: number | null;
+      consensusScore: number | null;
       outcome: IncidentOutcome;
     },
   ): Incident {

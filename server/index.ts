@@ -44,7 +44,18 @@ function tryResolveIncident(incidentId: string): void {
   const votes = db.getVotes(incidentId);
   const age = Date.now() - incident.createdAt;
   const ready = votes.length >= RESOLVE_AT_VOTE_COUNT || age >= RESOLVE_AFTER_MS;
-  if (!ready || votes.length === 0) return;
+  if (!ready) return;
+
+  if (votes.length === 0) {
+    const resolved = db.resolveIncident(incidentId, {
+      consensusSeverity: null,
+      consensusLikelihood: null,
+      consensusScore: null,
+      outcome: "unresolved",
+    });
+    hub.broadcast({ type: "incident:resolved", incident: resolved });
+    return;
+  }
 
   const resolution = resolveConsensus(votes);
   const resolved = db.resolveIncident(incidentId, {
