@@ -14,14 +14,21 @@
     </header>
 
     <main>
-      <section id="incidents" aria-label="Open incidents">
-        <h2>Open incidents</h2>
-        <p id="no-incidents" class="muted" hidden>No open incidents right now &mdash; one will appear shortly.</p>
-        <div id="incident-list"></div>
+      <section id="active-threat" aria-label="Active threat">
+        <div class="active-head">
+          <h2>Active threat</h2>
+          <div id="countdown" class="countdown" role="timer">
+            <span id="countdown-number">15</span>
+            <div class="countdown-bar"><div id="countdown-fill"></div></div>
+          </div>
+        </div>
+        <p id="no-active" class="muted" hidden>Next threat incoming&hellip;</p>
+        <div id="active-card"></div>
       </section>
 
       <section id="report" aria-label="Report a threat">
         <h2>Report a threat</h2>
+        <p id="queue-status" class="muted"></p>
         <form id="report-form">
           <label>
             Title
@@ -43,6 +50,7 @@
           </label>
           <button type="submit">Submit incident</button>
         </form>
+        <p id="report-feedback" class="muted" hidden></p>
       </section>
 
       <section id="leaderboard" aria-label="Analyst leaderboard">

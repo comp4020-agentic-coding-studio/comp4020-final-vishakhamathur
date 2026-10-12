@@ -1,7 +1,7 @@
 export type IncidentCategory = "login" | "exfiltration" | "malware" | "network" | "insider";
 export type IncidentSource = "generator" | "analyst";
-export type IncidentStatus = "open" | "resolved";
-export type IncidentOutcome = "true_positive" | "false_positive" | "unresolved";
+export type IncidentStatus = "queued" | "open" | "resolved";
+export type IncidentOutcome = "true_positive" | "false_positive" | "unresolved" | "ignored";
 
 export interface Analyst {
   id: string;
@@ -58,11 +58,12 @@ export interface LeaderboardEntry {
 }
 
 export type ServerMessage =
-  | { type: "hello"; me: { id: string; codename: string }; openIncidents: IncidentView[]; recentResolved: Incident[]; leaderboard: LeaderboardEntry[] }
+  | { type: "hello"; me: { id: string; codename: string }; active: IncidentView | null; queueLength: number; recentResolved: Incident[]; leaderboard: LeaderboardEntry[] }
   | { type: "incident:new"; incident: IncidentView }
   | { type: "vote:cast"; incidentId: string; analystId: string; codename: string; severity: number; likelihood: number }
   | { type: "incident:resolved"; incident: Incident }
-  | { type: "analyst:stats"; entry: LeaderboardEntry };
+  | { type: "analyst:stats"; entry: LeaderboardEntry }
+  | { type: "queue:update"; queueLength: number };
 
 export type ClientMessage =
   | { type: "vote"; incidentId: string; severity: number; likelihood: number }

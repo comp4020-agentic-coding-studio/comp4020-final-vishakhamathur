@@ -20,9 +20,9 @@ export interface Resolution {
   outcome: IncidentOutcome;
 }
 
-// Max stdev on a 1..5 scale (votes split at the extremes) is 2.0, so that's
-// the divisor that maps spread onto a 0..1 agreement score.
-const MAX_STDEV = 2;
+// Max stdev on a 1..10 scale (votes split evenly at the extremes) is 4.5, so
+// that's the divisor that maps spread onto a 0..1 agreement score.
+const MAX_STDEV = 4.5;
 
 export function resolveConsensus(votes: Vote[]): Resolution {
   const severities = votes.map((v) => v.severity);
@@ -36,7 +36,7 @@ export function resolveConsensus(votes: Vote[]): Resolution {
   let outcome: IncidentOutcome;
   if (agreement < 0.6) {
     outcome = "unresolved";
-  } else if (consensusSeverity * consensusLikelihood >= 9) {
+  } else if (consensusSeverity * consensusLikelihood >= 36) {
     outcome = "true_positive";
   } else {
     outcome = "false_positive";
@@ -45,8 +45,8 @@ export function resolveConsensus(votes: Vote[]): Resolution {
   return { consensusSeverity, consensusLikelihood, consensusScore, agreement, outcome };
 }
 
-// Max per-vote deviation from the mean on a 1..5 scale, on both axes at once.
-const MAX_DEVIATION = 4;
+// Max per-vote deviation from the mean on a 1..10 scale, on both axes at once.
+const MAX_DEVIATION = 9;
 
 export interface AnalystOutcome {
   analystId: string;

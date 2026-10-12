@@ -71,19 +71,40 @@ function randomIp(): string {
   return `${1 + Math.floor(Math.random() * 223)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
 }
 
-function fill(text: string): string {
+interface PlaceholderValues {
+  user: string;
+  country: string;
+  asset: string;
+  ip: string;
+  count: string;
+  size: string;
+}
+
+function randomValues(): PlaceholderValues {
+  return {
+    user: pick(USERS),
+    country: pick(COUNTRIES),
+    asset: pick(ASSETS),
+    ip: randomIp(),
+    count: String(10 + Math.floor(Math.random() * 490)),
+    size: (Math.random() * 20 + 0.5).toFixed(1),
+  };
+}
+
+function fill(text: string, values: PlaceholderValues): string {
   return text
-    .replace(/\{\{user\}\}/g, pick(USERS))
-    .replace(/\{\{country\}\}/g, pick(COUNTRIES))
-    .replace(/\{\{asset\}\}/g, pick(ASSETS))
-    .replace(/\{\{ip\}\}/g, randomIp())
-    .replace(/\{\{count\}\}/g, String(10 + Math.floor(Math.random() * 490)))
-    .replace(/\{\{size\}\}/g, (Math.random() * 20 + 0.5).toFixed(1));
+    .replace(/\{\{user\}\}/g, values.user)
+    .replace(/\{\{country\}\}/g, values.country)
+    .replace(/\{\{asset\}\}/g, values.asset)
+    .replace(/\{\{ip\}\}/g, values.ip)
+    .replace(/\{\{count\}\}/g, values.count)
+    .replace(/\{\{size\}\}/g, values.size);
 }
 
 export function generateThreat(): { title: string; description: string; category: IncidentCategory } {
   const template = pick(TEMPLATES);
-  return { title: fill(template.title), description: fill(template.description), category: template.category };
+  const values = randomValues();
+  return { title: fill(template.title, values), description: fill(template.description, values), category: template.category };
 }
 
 export const INCIDENT_CATEGORIES: IncidentCategory[] = ["login", "exfiltration", "malware", "network", "insider"];

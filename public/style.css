@@ -77,7 +77,8 @@ section h2 {
   font-weight: 700;
 }
 
-.incident {
+.incident,
+.threat {
   border: 1px solid var(--border);
   background: var(--panel-raised);
   border-radius: 8px;
@@ -88,28 +89,31 @@ section h2 {
   gap: 1.25rem;
 }
 
-.incident h3 {
+.incident h3,
+.threat h3 {
   margin: 0 0 0.4rem;
   font-size: 1.15rem;
 }
 
-.incident p {
+.incident p,
+.threat p {
   margin: 0 0 0.5rem;
 }
 
-.incident .meta {
+.incident .meta,
+.threat .meta {
   color: var(--muted);
   font-size: 0.9rem;
 }
 
-.incident .vote-controls {
+.vote-controls {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  min-width: 190px;
+  min-width: 220px;
 }
 
-.incident .vote-controls label {
+.vote-controls label {
   display: flex;
   justify-content: space-between;
   font-size: 0.9rem;
@@ -117,10 +121,95 @@ section h2 {
   color: var(--text);
 }
 
+.active-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.active-head h2 {
+  margin: 0;
+}
+
+.countdown {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.countdown #countdown-number {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--accent);
+  min-width: 1.6ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.countdown-bar {
+  width: 120px;
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#countdown-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
 .risk-matrix {
+  position: relative;
+  width: 220px;
+  height: 220px;
   background: #090c10;
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+.risk-matrix-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  grid-template-rows: repeat(10, 1fr);
+}
+
+.risk-matrix-grid .cell {
+  border: 1px solid var(--border);
+}
+
+.risk-matrix-dots {
+  position: absolute;
+  inset: 0;
+}
+
+.dot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.dot-mine {
+  width: 14px;
+  height: 14px;
+  margin: -7px;
+  background: transparent;
+  border: 3px solid var(--danger);
+  opacity: 1;
+}
+
+.matrix-caption {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
 }
 
 form {
@@ -206,7 +295,8 @@ th {
   color: #2a2004;
 }
 
-.badge.unresolved {
+.badge.unresolved,
+.badge.ignored {
   background: var(--border);
   color: var(--text);
 }

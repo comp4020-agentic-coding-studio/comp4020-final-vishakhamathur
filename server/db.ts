@@ -157,14 +157,15 @@ export class Db {
     category: IncidentCategory;
     source: IncidentSource;
     createdBy: string | null;
+    status: "open" | "queued";
   }): Incident {
     const createdAt = Date.now();
     this.raw
       .prepare(
         `INSERT INTO incidents (id, title, description, category, source, created_by, created_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.id, input.title, input.description, input.category, input.source, input.createdBy, createdAt);
+      .run(input.id, input.title, input.description, input.category, input.source, input.createdBy, createdAt, input.status);
     return {
       id: input.id,
       title: input.title,
@@ -173,13 +174,36 @@ export class Db {
       source: input.source,
       createdBy: input.createdBy,
       createdAt,
-      status: "open",
+      status: input.status,
       resolvedAt: null,
       consensusSeverity: null,
       consensusLikelihood: null,
       consensusScore: null,
       outcome: null,
     };
+  }
+
+  getQueuedIncidents(): Incident[] {
+    const rows = this.raw
+      .prepare("SELECT * FROM incidents WHERE status = 'queued' ORDER BY created_at ASC")
+      .all() as unknown as IncidentRow[];
+    return rows.map(incidentFromRow);
+  }
+
+  queuedIncidentCount(): number {
+    const row = this.raw.prepare("SELECT COUNT(*) AS n FROM incidents WHERE status = 'queued'").get() as { n: number };
+    return row.n;
+  }
+
+  // Activation stamps a fresh created_at so the 15s resolution timer and the
+  // client's countdown both start from when the threat actually goes live,
+  // not from when the analyst originally reported it.
+  activateIncident(id: string): Incident {
+    const createdAt = Date.now();
+    this.raw.prepare("UPDATE incidents SET status = 'open', created_at = ? WHERE id = ?").run(createdAt, id);
+    const incident = this.getIncident(id);
+    if (!incident) throw new Error(`incident ${id} vanished during activation`);
+    return incident;
   }
 
   getIncident(id: string): Incident | undefined {
@@ -199,11 +223,6 @@ export class Db {
       .prepare("SELECT * FROM incidents WHERE status = 'resolved' ORDER BY resolved_at DESC LIMIT ?")
       .all(limit) as unknown as IncidentRow[];
     return rows.map(incidentFromRow);
-  }
-
-  openIncidentCount(): number {
-    const row = this.raw.prepare("SELECT COUNT(*) AS n FROM incidents WHERE status = 'open'").get() as { n: number };
-    return row.n;
   }
 
   getVotes(incidentId: string): Vote[] {

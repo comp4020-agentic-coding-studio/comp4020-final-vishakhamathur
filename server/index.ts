@@ -14,9 +14,8 @@ import type { Analyst, ClientMessage, IncidentCategory } from "./types.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const DATA_DIR = process.env.DATA_DIR ?? "./data";
-const RESOLVE_AFTER_MS = 3 * 60_000;
-const RESOLVE_AT_VOTE_COUNT = 4;
-const MAX_OPEN_INCIDENTS = 5;
+const ACTIVE_DURATION_MS = 15_000;
+const MAX_QUEUED = 5;
 
 const db = new Db(DATA_DIR);
 const signer = new IdentitySigner(DATA_DIR);
@@ -37,21 +36,18 @@ function resolveIdentity(req: IncomingMessage, res: ServerResponse): Analyst {
   return db.createAnalyst(minted.id, generateCodename());
 }
 
-function tryResolveIncident(incidentId: string): void {
+function finishIncident(incidentId: string): void {
   const incident = db.getIncident(incidentId);
   if (!incident || incident.status !== "open") return;
 
   const votes = db.getVotes(incidentId);
-  const age = Date.now() - incident.createdAt;
-  const ready = votes.length >= RESOLVE_AT_VOTE_COUNT || age >= RESOLVE_AFTER_MS;
-  if (!ready) return;
 
   if (votes.length === 0) {
     const resolved = db.resolveIncident(incidentId, {
       consensusSeverity: null,
       consensusLikelihood: null,
       consensusScore: null,
-      outcome: "unresolved",
+      outcome: "ignored",
     });
     hub.broadcast({ type: "incident:resolved", incident: resolved });
     return;
@@ -72,15 +68,41 @@ function tryResolveIncident(incidentId: string): void {
   }
 }
 
-function sweepStaleIncidents(): void {
-  for (const incident of db.getOpenIncidents()) tryResolveIncident(incident.id);
+function resolveActive(incidentId: string): void {
+  finishIncident(incidentId);
+  startNextIncident();
+}
+
+// Focus Mode: exactly one threat is ever active. The next one comes from the
+// analyst report queue first (FIFO), falling back to the ambient generator,
+// and runs for a strict ACTIVE_DURATION_MS before resolveActive fires again.
+function startNextIncident(): void {
+  const queued = db.getQueuedIncidents()[0];
+  const incident = queued
+    ? db.activateIncident(queued.id)
+    : (() => {
+        const threat = generateThreat();
+        return db.createIncident({
+          id: randomUUID(),
+          title: threat.title,
+          description: threat.description,
+          category: threat.category,
+          source: "generator",
+          createdBy: null,
+          status: "open",
+        });
+      })();
+
+  if (queued) hub.broadcast({ type: "queue:update", queueLength: db.queuedIncidentCount() });
+  hub.broadcast({ type: "incident:new", incident: db.incidentView(incident) });
+  setTimeout(() => resolveActive(incident.id), ACTIVE_DURATION_MS);
 }
 
 function castVote(analyst: Analyst, incidentId: string, severity: number, likelihood: number): boolean {
   const incident = db.getIncident(incidentId);
   if (!incident || incident.status !== "open") return false;
-  if (!Number.isInteger(severity) || severity < 1 || severity > 5) return false;
-  if (!Number.isInteger(likelihood) || likelihood < 1 || likelihood > 5) return false;
+  if (!Number.isInteger(severity) || severity < 1 || severity > 10) return false;
+  if (!Number.isInteger(likelihood) || likelihood < 1 || likelihood > 10) return false;
 
   db.upsertVote(incidentId, analyst.id, severity, likelihood);
   hub.broadcast({
@@ -91,36 +113,33 @@ function castVote(analyst: Analyst, incidentId: string, severity: number, likeli
     severity,
     likelihood,
   });
-  tryResolveIncident(incidentId);
   return true;
 }
 
-function createIncident(
-  analyst: Analyst | null,
-  title: string,
-  description: string,
-  category: IncidentCategory,
-): boolean {
+function reportIncident(analyst: Analyst, title: string, description: string, category: IncidentCategory): boolean {
   if (!title.trim() || !description.trim()) return false;
   if (!INCIDENT_CATEGORIES.includes(category)) return false;
-  if (db.openIncidentCount() >= MAX_OPEN_INCIDENTS) return false;
+  if (db.queuedIncidentCount() >= MAX_QUEUED) return false;
 
-  const incident = db.createIncident({
+  db.createIncident({
     id: randomUUID(),
     title: title.trim().slice(0, 200),
     description: description.trim().slice(0, 1000),
     category,
-    source: analyst ? "analyst" : "generator",
-    createdBy: analyst ? analyst.id : null,
+    source: "analyst",
+    createdBy: analyst.id,
+    status: "queued",
   });
-  hub.broadcast({ type: "incident:new", incident: db.incidentView(incident) });
+  hub.broadcast({ type: "queue:update", queueLength: db.queuedIncidentCount() });
   return true;
 }
 
 function stateSnapshot(analyst: Analyst) {
+  const open = db.getOpenIncidents()[0];
   return {
     me: { id: analyst.id, codename: analyst.codename },
-    openIncidents: db.getOpenIncidents().map((incident) => db.incidentView(incident)),
+    active: open ? db.incidentView(open) : null,
+    queueLength: db.queuedIncidentCount(),
     recentResolved: db.getResolvedIncidents(20),
     leaderboard: db.getLeaderboard(),
   };
@@ -196,7 +215,7 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/incidents") {
     const analyst = resolveIdentity(req, res);
     const body = (await readJsonBody(req)) as Partial<{ title: string; description: string; category: string }>;
-    const ok = createIncident(
+    const ok = reportIncident(
       analyst,
       String(body.title ?? ""),
       String(body.description ?? ""),
@@ -253,25 +272,17 @@ server.on("upgrade", (req, socket, head) => {
       if (message.type === "vote") {
         castVote(analyst, message.incidentId, message.severity, message.likelihood);
       } else if (message.type === "incident:create") {
-        createIncident(analyst, message.title, message.description, message.category);
+        reportIncident(analyst, message.title, message.description, message.category);
       }
     });
   });
 });
 
-function scheduleNextThreat(): void {
-  const delay = 45_000 + Math.random() * 45_000;
-  setTimeout(() => {
-    if (db.openIncidentCount() < MAX_OPEN_INCIDENTS) {
-      const threat = generateThreat();
-      createIncident(null, threat.title, threat.description, threat.category);
-    }
-    scheduleNextThreat();
-  }, delay);
-}
-
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`listening on 0.0.0.0:${PORT}`);
-  scheduleNextThreat();
-  setInterval(sweepStaleIncidents, 10_000);
+  // Leftover 'open' rows mean the process restarted (or ran under the old,
+  // pre-Focus-Mode code that allowed several at once); close all of them out
+  // against whatever votes they already have before starting the loop fresh.
+  for (const incident of db.getOpenIncidents()) finishIncident(incident.id);
+  startNextIncident();
 });
