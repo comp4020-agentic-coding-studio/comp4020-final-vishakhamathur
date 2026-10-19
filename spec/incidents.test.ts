@@ -34,6 +34,41 @@ it("lets an analyst vote on the active threat", async () => {
   );
 });
 
+it("rejects a second vote from the same analyst on the same threat", async () => {
+  const cookie = await analystCookie();
+
+  const stateRes = await fetch(new URL("/api/state", baseUrl), { headers: { cookie } });
+  const state = (await stateRes.json()) as { active: { id: string } | null };
+  expect(state.active, "a threat should always be active").toBeTruthy();
+  const incidentId = state.active!.id;
+
+  const firstVote = await fetch(new URL(`/api/incidents/${incidentId}/vote`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ severity: 6, likelihood: 6 }),
+  });
+  expect(firstVote.status).toBe(200);
+
+  const secondVote = await fetch(new URL(`/api/incidents/${incidentId}/vote`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ severity: 9, likelihood: 9 }),
+  });
+  expect(secondVote.status, "a second vote on the same threat should be rejected, not applied as an update").toBe(400);
+
+  const afterRes = await fetch(new URL("/api/state", baseUrl), { headers: { cookie } });
+  const after = (await afterRes.json()) as {
+    active: { id: string; votes: { severity: number; likelihood: number }[] } | null;
+  };
+  if (after.active?.id === incidentId) {
+    expect(
+      after.active.votes,
+      "the rejected second vote should not have overwritten the first",
+    ).toContainEqual(expect.objectContaining({ severity: 6, likelihood: 6 }));
+    expect(after.active.votes).not.toContainEqual(expect.objectContaining({ severity: 9, likelihood: 9 }));
+  }
+});
+
 it("queues an analyst-reported threat behind the active one", async () => {
   const cookie = await analystCookie();
 

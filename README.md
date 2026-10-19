@@ -51,14 +51,25 @@ behaves exactly like a generator-made one once it's live. The leaderboard
 shows how often each analyst's votes have matched the room's eventual
 consensus.
 
+## Roles and permissions
+
+The first analyst the app has ever seen is the **Moderator** — everyone
+after that is a regular **Analyst**. The only thing this unlocks is a
+"Resolve now" button that ends the active incident immediately instead of
+waiting out its countdown; every other action (voting, reporting) works the
+same for both roles. The server enforces this itself (a non-moderator's
+request to resolve early is rejected with a 403, not just hidden in the
+UI), and the reasoning behind who gets the role and why is in `PROCESS.md`.
+Every vote, report, and moderator action is written to a persistent,
+attributed log that survives restarts — see `PROCESS.md` for how.
+
 ## What this draft doesn't claim
 
-This is the crit-8 first draft: core loop only. The consensus/outlier
-scoring is a simple, explainable first pass (documented in `PROCESS.md`), not
-a claim about real threat-detection quality. No accounts, no incident
-severity beyond what analysts assign it, no admin controls yet. What "good"
-means here is expected to sharpen across crits 9 and 10 as the loop gets
-used.
+The consensus/outlier scoring is a simple, explainable first pass
+(documented in `PROCESS.md`), not a claim about real threat-detection
+quality. There are still no accounts and no incident severity beyond what
+analysts assign it. What "good" means here is expected to keep sharpening
+as the loop gets used.
 
 ## Sources
 

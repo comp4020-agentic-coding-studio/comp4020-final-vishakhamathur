@@ -58,7 +58,7 @@ export interface LeaderboardEntry {
 }
 
 export type ServerMessage =
-  | { type: "hello"; me: { id: string; codename: string }; active: IncidentView | null; queueLength: number; recentResolved: Incident[]; leaderboard: LeaderboardEntry[] }
+  | { type: "hello"; me: { id: string; codename: string; isModerator: boolean }; active: IncidentView | null; queueLength: number; recentResolved: Incident[]; leaderboard: LeaderboardEntry[] }
   | { type: "incident:new"; incident: IncidentView }
   | { type: "vote:cast"; incidentId: string; analystId: string; codename: string; severity: number; likelihood: number }
   | { type: "incident:resolved"; incident: Incident }
@@ -67,4 +67,5 @@ export type ServerMessage =
 
 export type ClientMessage =
   | { type: "vote"; incidentId: string; severity: number; likelihood: number }
-  | { type: "incident:create"; title: string; description: string; category: IncidentCategory };
+  | { type: "incident:create"; title: string; description: string; category: IncidentCategory }
+  | { type: "moderator:resolve-now" };

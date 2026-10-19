@@ -19,6 +19,7 @@ const el = {
   leaderboardBody: document.getElementById("leaderboard-body"),
   reportForm: document.getElementById("report-form"),
   reportFeedback: document.getElementById("report-feedback"),
+  resolveNow: document.getElementById("resolve-now"),
 };
 
 function escapeHtml(s) {
@@ -58,13 +59,23 @@ function riskMatrixHtml(incident, mySeverity, myLikelihood) {
 }
 
 function renderMe() {
-  el.me.textContent = state.me ? `You are: ${state.me.codename}` : "connecting…";
+  el.me.textContent = state.me
+    ? `You are: ${state.me.codename} · ${state.me.isModerator ? "Moderator" : "Analyst"}`
+    : "connecting…";
+  // Cosmetic only — the server is the actual gate on the resolve-now
+  // request, so hiding this button is convenience, not the enforcement.
+  el.resolveNow.hidden = !state.me?.isModerator;
 }
 
 function activeCardHtml(incident) {
   const myVote = incident.votes.find((v) => v.analystId === state.me?.id);
   const severity = myVote?.severity ?? 5;
   const likelihood = myVote?.likelihood ?? 5;
+  // One vote per analyst per threat is enforced server-side; a second
+  // attempt gets rejected, not applied as an update. Disabling the controls
+  // once a vote exists keeps the UI from inviting an action the server
+  // will refuse — this is convenience, not the actual enforcement.
+  const locked = !!myVote;
   return `
     <article class="threat">
       <div class="threat-info">
@@ -75,12 +86,12 @@ function activeCardHtml(incident) {
       <div class="vote-controls">
         ${riskMatrixHtml(incident, severity, likelihood)}
         <label>Severity <span data-sev-out>${severity}</span>
-          <input type="range" min="1" max="10" value="${severity}" data-sev />
+          <input type="range" min="1" max="10" value="${severity}" data-sev ${locked ? "disabled" : ""} />
         </label>
         <label>Likelihood <span data-like-out>${likelihood}</span>
-          <input type="range" min="1" max="10" value="${likelihood}" data-like />
+          <input type="range" min="1" max="10" value="${likelihood}" data-like ${locked ? "disabled" : ""} />
         </label>
-        <button type="button" data-vote>${myVote ? "Update vote" : "Cast vote"}</button>
+        <button type="button" data-vote ${locked ? "disabled" : ""}>${locked ? "Vote locked in" : "Cast vote"}</button>
       </div>
     </article>`;
 }
@@ -285,6 +296,10 @@ el.reportForm.addEventListener("submit", (event) => {
   el.reportFeedback.textContent = "Report queued — it'll go live once earlier threats resolve.";
   el.reportFeedback.hidden = false;
   feedbackTimer = setTimeout(() => (el.reportFeedback.hidden = true), 4000);
+});
+
+el.resolveNow.addEventListener("click", () => {
+  send({ type: "moderator:resolve-now" });
 });
 
 // Hitting `/` first (a normal page load) is what sets the identity cookie

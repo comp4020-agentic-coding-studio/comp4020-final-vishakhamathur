@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS votes (
 
 CREATE INDEX IF NOT EXISTS idx_votes_incident ON votes(incident_id);
 CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status, created_at);
+
+CREATE TABLE IF NOT EXISTS action_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  analyst_id  TEXT NOT NULL,
+  codename    TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  detail      TEXT,
+  at          INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_action_log_at ON action_log(at);
 `;
 
 interface AnalystRow {
@@ -140,6 +151,31 @@ export class Db {
   getAnalyst(id: string): Analyst | undefined {
     const row = this.raw.prepare("SELECT * FROM analysts WHERE id = ?").get(id) as unknown as AnalystRow | undefined;
     return row ? analystFromRow(row) : undefined;
+  }
+
+  // The moderator is whoever has the earliest `created_at` among all
+  // analysts ever seen — derived from persisted history, not a flag a
+  // client could spoof, so it survives restarts and redeploys. `id` is a
+  // TEXT primary key, so SQLite still keeps an implicit `rowid` that
+  // increases with insertion order; ordering by it breaks ties between two
+  // analysts created in the same millisecond by who was actually inserted
+  // first (ordering by `id` itself would effectively be random — UUIDs sort
+  // independently of creation order).
+  isModerator(id: string): boolean {
+    const row = this.raw
+      .prepare("SELECT id FROM analysts ORDER BY created_at ASC, rowid ASC LIMIT 1")
+      .get() as { id: string } | undefined;
+    return row?.id === id;
+  }
+
+  // Persistence only — this is the durable record that outlives the
+  // process and the crit. Live, human-readable narration is a separate
+  // concern, handled by `narrate` in server/index.ts.
+  logAction(analystId: string, codename: string, action: string, detail?: string): void {
+    const at = Date.now();
+    this.raw
+      .prepare("INSERT INTO action_log (analyst_id, codename, action, detail, at) VALUES (?, ?, ?, ?, ?)")
+      .run(analystId, codename, action, detail ?? null, at);
   }
 
   createAnalyst(id: string, codename: string): Analyst {
@@ -239,21 +275,22 @@ export class Db {
     return row.n;
   }
 
-  upsertVote(incidentId: string, analystId: string, severity: number, likelihood: number): void {
-    const castAt = Date.now();
+  // Strict one-vote-per-analyst-per-threat: once a row exists for this
+  // (incident, analyst) pair, a further vote is rejected outright rather
+  // than updating it in place. Returns false if the analyst already voted
+  // on this incident, true if the vote was newly recorded.
+  insertVote(incidentId: string, analystId: string, severity: number, likelihood: number): boolean {
     const existing = this.raw
       .prepare("SELECT 1 FROM votes WHERE incident_id = ? AND analyst_id = ?")
       .get(incidentId, analystId);
-    if (existing) {
-      this.raw
-        .prepare("UPDATE votes SET severity = ?, likelihood = ?, cast_at = ? WHERE incident_id = ? AND analyst_id = ?")
-        .run(severity, likelihood, castAt, incidentId, analystId);
-    } else {
-      this.raw
-        .prepare("INSERT INTO votes (incident_id, analyst_id, severity, likelihood, cast_at) VALUES (?, ?, ?, ?, ?)")
-        .run(incidentId, analystId, severity, likelihood, castAt);
-      this.raw.prepare("UPDATE analysts SET votes_cast = votes_cast + 1 WHERE id = ?").run(analystId);
-    }
+    if (existing) return false;
+
+    const castAt = Date.now();
+    this.raw
+      .prepare("INSERT INTO votes (incident_id, analyst_id, severity, likelihood, cast_at) VALUES (?, ?, ?, ?, ?)")
+      .run(incidentId, analystId, severity, likelihood, castAt);
+    this.raw.prepare("UPDATE analysts SET votes_cast = votes_cast + 1 WHERE id = ?").run(analystId);
+    return true;
   }
 
   resolveIncident(
