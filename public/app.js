@@ -1,7 +1,55 @@
 const ACTIVE_DURATION_MS = 15_000;
+const CRITICAL_THRESHOLD_MS = 5_000;
+
+// No audio files ship with the app, so tension sounds are synthesized with
+// the Web Audio API rather than fetched — nothing to fail loading mid-demo,
+// and the brief explicitly allows generated beeps/tones as the fallback.
+// Browsers block audio before a user gesture, so the context is created
+// lazily on first click/keydown rather than at page load.
+const audio = {
+  ctx: null,
+};
+
+function unlockAudio() {
+  if (audio.ctx) return;
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) return;
+  audio.ctx = new AudioContextCtor();
+}
+document.addEventListener("click", unlockAudio, { once: true });
+document.addEventListener("keydown", unlockAudio, { once: true });
+
+function playTone({ frequency, duration, type = "sine", gain = 0.2, delay = 0 }) {
+  if (!audio.ctx) return;
+  const startAt = audio.ctx.currentTime + delay;
+  const oscillator = audio.ctx.createOscillator();
+  const gainNode = audio.ctx.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, startAt);
+  gainNode.gain.setValueAtTime(gain, startAt);
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+  oscillator.connect(gainNode).connect(audio.ctx.destination);
+  oscillator.start(startAt);
+  oscillator.stop(startAt + duration);
+}
+
+function playTick() {
+  playTone({ frequency: 880, duration: 0.08, type: "square", gain: 0.15 });
+}
+
+function playConsensusDing() {
+  playTone({ frequency: 880, duration: 0.15, type: "sine", gain: 0.25 });
+  playTone({ frequency: 1320, duration: 0.25, type: "sine", gain: 0.2, delay: 0.1 });
+}
+
+function playBreachBuzzer() {
+  playTone({ frequency: 110, duration: 0.5, type: "sawtooth", gain: 0.3 });
+  playTone({ frequency: 100, duration: 0.5, type: "sawtooth", gain: 0.3, delay: 0.15 });
+}
 
 const state = {
   me: null,
+  role: "analyst",
   active: null,
   queueLength: 0,
   resolvedHistory: [],
@@ -10,8 +58,10 @@ const state = {
 
 const el = {
   me: document.getElementById("me"),
+  roleBanner: document.getElementById("role-banner"),
   activeCard: document.getElementById("active-card"),
   noActive: document.getElementById("no-active"),
+  countdown: document.getElementById("countdown"),
   countdownNumber: document.getElementById("countdown-number"),
   countdownFill: document.getElementById("countdown-fill"),
   queueStatus: document.getElementById("queue-status"),
@@ -65,6 +115,19 @@ function renderMe() {
   // Cosmetic only — the server is the actual gate on the resolve-now
   // request, so hiding this button is convenience, not the enforcement.
   el.resolveNow.hidden = !state.me?.isModerator;
+}
+
+// The role is secret, per-round flavor — it never changes what the server
+// will accept from this analyst, only what's shown to them.
+function renderRole() {
+  el.roleBanner.hidden = false;
+  if (state.role === "saboteur") {
+    el.roleBanner.textContent = "SECRET ROLE: SABOTEUR — Drag the consensus off target!";
+    el.roleBanner.className = "role-banner saboteur";
+  } else {
+    el.roleBanner.textContent = "ROLE: ANALYST";
+    el.roleBanner.className = "role-banner analyst";
+  }
 }
 
 function activeCardHtml(incident) {
@@ -135,20 +198,30 @@ function renderActive() {
 }
 
 let countdownTimer = null;
+let lastTickedSecond = null;
 
 function renderCountdown() {
   clearInterval(countdownTimer);
+  lastTickedSecond = null;
   if (!state.active) {
     el.countdownNumber.textContent = "–";
     el.countdownFill.style.width = "0%";
+    el.countdown.classList.remove("critical");
     return;
   }
 
   const deadline = state.active.createdAt + ACTIVE_DURATION_MS;
   const tick = () => {
     const remainingMs = Math.max(0, deadline - Date.now());
-    el.countdownNumber.textContent = String(Math.ceil(remainingMs / 1000));
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+    el.countdownNumber.textContent = String(remainingSeconds);
     el.countdownFill.style.width = `${(remainingMs / ACTIVE_DURATION_MS) * 100}%`;
+    el.countdown.classList.toggle("critical", remainingMs > 0 && remainingMs <= CRITICAL_THRESHOLD_MS);
+
+    if (remainingSeconds <= 5 && remainingSeconds >= 1 && remainingSeconds !== lastTickedSecond) {
+      lastTickedSecond = remainingSeconds;
+      playTick();
+    }
     if (remainingMs <= 0) clearInterval(countdownTimer);
   };
   tick();
@@ -204,11 +277,13 @@ function renderLeaderboard() {
 
 function applyHello(msg) {
   state.me = msg.me;
+  state.role = msg.role;
   state.active = msg.active;
   state.queueLength = msg.queueLength;
   state.resolvedHistory = msg.recentResolved;
   state.leaderboard = new Map(msg.leaderboard.map((e) => [e.id, e]));
   renderMe();
+  renderRole();
   renderActive();
   renderCountdown();
   renderQueueStatus();
@@ -250,6 +325,14 @@ function applyMessage(msg) {
       renderActive();
       renderCountdown();
       renderHistory();
+      // Reuses the server-computed consensusScore (same >=60 threshold
+      // resolveConsensus uses for "agreement reached") rather than
+      // re-deriving spread client-side — consensus math stays in
+      // server/consensus.ts.
+      if (msg.incident.outcome !== "ignored") {
+        if ((msg.incident.consensusScore ?? 0) >= 60) playConsensusDing();
+        else playBreachBuzzer();
+      }
       break;
     case "analyst:stats":
       state.leaderboard.set(msg.entry.id, msg.entry);
@@ -258,6 +341,10 @@ function applyMessage(msg) {
     case "queue:update":
       state.queueLength = msg.queueLength;
       renderQueueStatus();
+      break;
+    case "role:assign":
+      state.role = msg.role;
+      renderRole();
       break;
   }
 }

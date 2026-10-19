@@ -120,11 +120,13 @@ beyond the crit itself."
 database row; a parallel `narrate()` helper in `server/index.ts` writes a
 human-readable line to stdout at the same call sites, tagged by event type
 — `[START]`, `[JOIN]`/`[LEAVE]` (WS connect/disconnect), `[NEW]` (first-time
-identity), `[THREAT]` (a new incident goes active), `[VOTE]`, `[DENIED]`
-(covers every rejection: duplicate vote, out-of-range vote, voting on a
-closed incident, a non-moderator hitting the moderator route, an invalid
-report), `[REPORT]`, `[MODERATE]`, `[RESOLVE]` (consensus level and which
-side won), and `[FLAG]` (an analyst crosses the insider threshold). These
+identity), `[THREAT]` (a new incident goes active), `[ROLE]` (a Secret
+Saboteur is assigned for the round — no codename in this one line, see
+below), `[VOTE]`, `[DENIED]` (covers every rejection: duplicate vote,
+out-of-range vote, voting on a closed incident, a non-moderator hitting the
+moderator route, an invalid report), `[REPORT]`, `[MODERATE]`, `[RESOLVE]`
+(consensus level and which side won), and `[FLAG]` (an analyst crosses the
+insider threshold). These
 two are kept separate on purpose: the database row is the queryable,
 structured record; the console line is the actual interface the crit's
 narrate-from-`flyctl-logs` demo depends on, so it's written to read as a
@@ -167,6 +169,68 @@ resolves" affordance that upsert gave analysts. For a 15-second window
 that's a small loss, and a strict one-vote rule is unambiguous to test and
 to narrate from logs, which matters more for this crit's demo than vote
 correction would.
+
+## Making the room feel the stakes: Secret Saboteur, tension audio, war-room theme
+
+**The question**: the first ten crits built a correct real-time triage
+loop; nothing about it was designed to make a room of people actually feel
+the pressure of a 15-second clock. This pass adds three things purely in
+service of that — none of them touch voting, consensus, persistence, or the
+permission model above.
+
+**Secret Saboteur — deliberately not persisted**: every new active
+incident, one connected analyst (across however many tabs/devices they
+have open) is randomly picked as this round's hidden Saboteur
+(`assignSaboteur()` in `server/index.ts`, using two new `Hub` methods in
+`server/ws.ts`: `sendTo` and `connectedAnalystIds`). Unlike the moderator
+role, this is a `let` in server memory, not a DB column — it's round-scoped
+game flavor, not an identity fact that needs to survive a Fly restart, and
+giving it no persistence is the simplest thing that's still correct: a
+restart just means the in-flight round's role gets reassigned along with
+everything else Focus Mode already resets. The role never changes what the
+server accepts from that analyst — it's shown, not enforced — so there was
+no new validation surface to add anywhere `castVote`/`reportIncident`
+already check.
+
+**Why no codename in the `[ROLE]` log line**: every other `narrate()` call
+names the analyst, because the crit's whole narration design is "a
+presenter reads this log aloud and it makes sense." Naming the Saboteur
+there would broadcast the one piece of information the game depends on
+staying hidden, so that one line is deliberately the odd one out —
+`[ROLE] Secret Saboteur assigned for this round.`, nothing else.
+
+**REST exposure for testability**: `stateSnapshot()` now includes a
+`role: "analyst" | "saboteur"` field (also carried on the WS `hello`
+message and pushed live via a new `role:assign` message), so
+`spec/roles.test.ts` can assert against `GET /api/state` without a WS test
+client — the same "mirror real-time behavior as a REST fallback only when
+it makes it testable" rule the moderator route and queue length already
+follow.
+
+**Audio tension — Web Audio API, not files**: no audio assets ship with the
+app, and none were available to use, so ticking/ding/buzzer are short
+oscillator tones synthesized client-side in `public/app.js`
+(`playTick`/`playConsensusDing`/`playBreachBuzzer`), not `<audio>` elements
+pointing at files. This avoids a new static route, a new asset to keep in
+sync with a build step we don't have, and anything that could fail to load
+over a flaky venue Wi-Fi mid-crit. The `AudioContext` is created lazily on
+the first click/keydown rather than at page load, because browsers refuse
+to start audio before a user gesture — that's a platform constraint, not a
+design choice. The resolution sound reuses the server-computed
+`consensusScore` and the same `>= 60` cutoff `resolveConsensus` already
+uses for its agreement threshold (`server/consensus.ts`), rather than
+re-deriving "how scattered are the dots" independently on the client —
+consensus math stays in one place, in one file, per the existing rule.
+
+**War-room theme**: a full re-skin of `public/style.css` via the existing
+CSS custom properties (`--bg`, `--accent`, etc.) — black background, neon
+green with a `text-shadow`/`box-shadow` glow, a monospace font stack, and a
+CSS-only repeating-gradient scanline overlay (no image asset to ship or
+fail to load). No class names or DOM structure changed, so none of
+`app.js`'s existing selectors needed touching. The countdown gets one new
+state, `.countdown.critical` (toggled by `app.js` when `remainingMs <=
+5000`), with a `flash-red` keyframe animation shared with the Saboteur's
+own banner styling.
 
 ## What I'd revisit
 

@@ -1,14 +1,15 @@
 :root {
   color-scheme: dark;
-  --bg: #0d1117;
-  --panel: #161b22;
-  --panel-raised: #1c232c;
-  --border: #30363d;
-  --text: #f0f4f8;
-  --muted: #a9b7c6;
-  --accent: #5eead4;
-  --danger: #ff6b61;
-  --warn: #f0c454;
+  --bg: #000000;
+  --panel: #0a0f0a;
+  --panel-raised: #0f1a0f;
+  --border: #1f3d1f;
+  --text: #c8ffc8;
+  --muted: #5fa05f;
+  --accent: #39ff14;
+  --amber: #ffb300;
+  --danger: #ff2a2a;
+  --warn: #ffb300;
 }
 
 html {
@@ -25,11 +26,29 @@ body {
   color: var(--text);
   line-height: 1.6;
   font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    Roboto,
-    sans-serif;
+    ui-monospace,
+    "Cascadia Code",
+    "Fira Code",
+    Menlo,
+    Consolas,
+    monospace;
+  position: relative;
+}
+
+/* CRT/war-room scanline overlay — CSS-only, no image asset. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(57, 255, 20, 0.04) 0px,
+    rgba(57, 255, 20, 0.04) 1px,
+    transparent 1px,
+    transparent 3px
+  );
 }
 
 header {
@@ -40,6 +59,10 @@ header {
 header h1 {
   margin: 0 0 0.4rem;
   font-size: 1.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-shadow: 0 0 6px var(--accent), 0 0 16px rgba(57, 255, 20, 0.5);
 }
 
 .me {
@@ -47,6 +70,33 @@ header h1 {
   margin: 0.3rem 0;
   font-size: 1.05rem;
   font-weight: 600;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.6);
+}
+
+.role-banner {
+  max-width: 1000px;
+  margin: 1.5rem auto 0;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.role-banner.analyst {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: rgba(57, 255, 20, 0.08);
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.5);
+}
+
+.role-banner.saboteur {
+  border: 1px solid var(--danger);
+  color: var(--amber);
+  background: rgba(255, 42, 42, 0.12);
+  text-shadow: 0 0 6px var(--amber);
+  animation: flash-red 0.9s steps(2, start) infinite;
 }
 
 .muted {
@@ -66,6 +116,7 @@ section {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1.25rem 1.5rem;
+  box-shadow: 0 0 12px rgba(57, 255, 20, 0.06);
 }
 
 section h2 {
@@ -73,8 +124,9 @@ section h2 {
   font-size: 1.05rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text);
+  color: var(--accent);
   font-weight: 700;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.5);
 }
 
 .incident,
@@ -145,6 +197,7 @@ section h2 {
   min-width: 1.6ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 6px var(--accent);
 }
 
 .countdown-bar {
@@ -159,7 +212,30 @@ section h2 {
   height: 100%;
   width: 100%;
   background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
   transition: width 0.2s linear;
+}
+
+/* Last 5 seconds: aggressive red flash, per the war-room brief. */
+.countdown.critical #countdown-number {
+  color: var(--danger);
+  text-shadow: 0 0 10px var(--danger);
+  animation: flash-red 0.4s steps(2, start) infinite;
+}
+
+.countdown.critical #countdown-fill {
+  background: var(--danger);
+  box-shadow: 0 0 10px var(--danger);
+}
+
+@keyframes flash-red {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .risk-matrix {
@@ -195,6 +271,7 @@ section h2 {
   margin: -5px;
   border-radius: 50%;
   background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
   opacity: 0.85;
 }
 
@@ -245,15 +322,19 @@ textarea {
 button {
   cursor: pointer;
   background: var(--accent);
-  color: #042e29;
+  color: #001a00;
   border: none;
   font-weight: 700;
   width: fit-content;
   padding: 0.55rem 1.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  box-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
 }
 
 button:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.15);
+  box-shadow: 0 0 16px rgba(57, 255, 20, 0.8);
 }
 
 table {

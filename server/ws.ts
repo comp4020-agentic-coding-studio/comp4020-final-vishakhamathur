@@ -21,4 +21,20 @@ export class Hub {
       if (connection.ws.readyState === connection.ws.OPEN) connection.ws.send(data);
     }
   }
+
+  // Sends to every open socket for this analyst — an analyst can have more
+  // than one tab/device connected at once, and all of them should agree on
+  // the round's role assignment.
+  sendTo(analystId: string, message: ServerMessage): void {
+    const data = JSON.stringify(message);
+    for (const connection of this.connections) {
+      if (connection.analystId === analystId && connection.ws.readyState === connection.ws.OPEN) {
+        connection.ws.send(data);
+      }
+    }
+  }
+
+  connectedAnalystIds(): string[] {
+    return [...new Set([...this.connections].map((c) => c.analystId))];
+  }
 }

@@ -63,6 +63,19 @@ UI), and the reasoning behind who gets the role and why is in `PROCESS.md`.
 Every vote, report, and moderator action is written to a persistent,
 attributed log that survives restarts — see `PROCESS.md` for how.
 
+## Playing it as a room
+
+Every round, exactly one connected analyst is secretly the **Saboteur** —
+everyone sees "ROLE: ANALYST" except that one person, who sees "SECRET
+ROLE: SABOTEUR — Drag the consensus off target!" It's social, not
+mechanical: nothing about what a Saboteur can submit is different, so the
+only way to find them is to watch who's voting oddly and guess. The role
+resets every round and isn't tied to anything that survives a restart —
+it's a game layer on top of the triage loop, not a new permission. The
+15-second countdown ticks audibly in its last 5 seconds and flashes red on
+screen, then plays a ding if the room's votes landed close together or a
+buzzer if they were scattered.
+
 ## What this draft doesn't claim
 
 The consensus/outlier scoring is a simple, explainable first pass

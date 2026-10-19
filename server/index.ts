@@ -10,7 +10,7 @@ import { generateThreat, INCIDENT_CATEGORIES } from "./generator.ts";
 import { analystCookieHeader, generateCodename, IdentitySigner, readAnalystCookie } from "./identity.ts";
 import { renderReadmePage } from "./readme.ts";
 import { Hub } from "./ws.ts";
-import type { Analyst, ClientMessage, IncidentCategory } from "./types.ts";
+import type { Analyst, ClientMessage, IncidentCategory, Role } from "./types.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const DATA_DIR = process.env.DATA_DIR ?? "./data";
@@ -58,6 +58,31 @@ function resolveIdentity(req: IncomingMessage, res: ServerResponse): Analyst {
 // cancel the pending timeout instead of racing it (both would otherwise
 // try to resolve + advance the same incident).
 let activeTimer: NodeJS.Timeout | null = null;
+
+// Secret Saboteur: a per-round game role, reassigned from scratch for every
+// new active incident. Deliberately in-memory only (not a DB column, not
+// logged with a codename attached) — unlike the moderator role, there's
+// nothing here that needs to survive a restart, and naming the saboteur in
+// the narration stream the crit demo reads live would spoil the one thing
+// that's supposed to stay secret.
+let currentSaboteurId: string | null = null;
+
+function roleFor(analystId: string): Role {
+  return analystId === currentSaboteurId ? "saboteur" : "analyst";
+}
+
+// Picks one connected analyst (across however many tabs they have open) to
+// be this round's saboteur and tells every socket its role. The saboteur's
+// own socket(s) get the "analyst" broadcast first and the "saboteur"
+// message second, so the more specific message wins rather than being
+// clobbered back to "analyst".
+function assignSaboteur(): void {
+  const candidates = hub.connectedAnalystIds();
+  currentSaboteurId = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)]! : null;
+  hub.broadcast({ type: "role:assign", role: "analyst" });
+  if (currentSaboteurId) hub.sendTo(currentSaboteurId, { type: "role:assign", role: "saboteur" });
+  narrate("ROLE", "Secret Saboteur assigned for this round.");
+}
 
 // "Won by" framing for the narration line: who the consensus sided with,
 // in terms a non-technical listener following along from logs can parse.
@@ -147,6 +172,7 @@ function startNextIncident(): void {
     "THREAT",
     `New active threat — ID: ${shortId(incident.id)} "${incident.title}" (${incident.source === "analyst" ? "analyst-reported" : "auto-generated"})`,
   );
+  assignSaboteur();
   activeTimer = setTimeout(() => resolveActive(incident.id), ACTIVE_DURATION_MS);
 }
 
@@ -235,6 +261,7 @@ function stateSnapshot(analyst: Analyst) {
   const open = db.getOpenIncidents()[0];
   return {
     me: { id: analyst.id, codename: analyst.codename, isModerator: db.isModerator(analyst.id) },
+    role: roleFor(analyst.id),
     active: open ? db.incidentView(open) : null,
     queueLength: db.queuedIncidentCount(),
     recentResolved: db.getResolvedIncidents(20),

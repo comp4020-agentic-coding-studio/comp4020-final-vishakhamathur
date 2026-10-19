@@ -57,13 +57,24 @@ export interface LeaderboardEntry {
   insiderFlagged: boolean;
 }
 
+export type Role = "analyst" | "saboteur";
+
 export type ServerMessage =
-  | { type: "hello"; me: { id: string; codename: string; isModerator: boolean }; active: IncidentView | null; queueLength: number; recentResolved: Incident[]; leaderboard: LeaderboardEntry[] }
+  | {
+      type: "hello";
+      me: { id: string; codename: string; isModerator: boolean };
+      role: Role;
+      active: IncidentView | null;
+      queueLength: number;
+      recentResolved: Incident[];
+      leaderboard: LeaderboardEntry[];
+    }
   | { type: "incident:new"; incident: IncidentView }
   | { type: "vote:cast"; incidentId: string; analystId: string; codename: string; severity: number; likelihood: number }
   | { type: "incident:resolved"; incident: Incident }
   | { type: "analyst:stats"; entry: LeaderboardEntry }
-  | { type: "queue:update"; queueLength: number };
+  | { type: "queue:update"; queueLength: number }
+  | { type: "role:assign"; role: Role };
 
 export type ClientMessage =
   | { type: "vote"; incidentId: string; severity: number; likelihood: number }
