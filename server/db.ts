@@ -1,26 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
-import type {
-  Analyst,
-  Incident,
-  IncidentCategory,
-  IncidentOutcome,
-  IncidentSource,
-  IncidentView,
-  LeaderboardEntry,
-  Vote,
-  VoteView,
-} from "./types.ts";
+import type { Analyst, Incident, IncidentCategory, IncidentOutcome, IncidentView, Vote, VoteView } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS analysts (
-  id              TEXT PRIMARY KEY,
-  codename        TEXT NOT NULL,
-  created_at      INTEGER NOT NULL,
-  votes_cast      INTEGER NOT NULL DEFAULT 0,
-  agreement_sum   REAL    NOT NULL DEFAULT 0,
-  agreement_count INTEGER NOT NULL DEFAULT 0,
-  insider_flags   INTEGER NOT NULL DEFAULT 0
+  id         TEXT PRIMARY KEY,
+  codename   TEXT NOT NULL,
+  created_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS incidents (
@@ -49,7 +35,6 @@ CREATE TABLE IF NOT EXISTS votes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_votes_incident ON votes(incident_id);
-CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status, created_at);
 
 CREATE TABLE IF NOT EXISTS action_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,10 +52,6 @@ interface AnalystRow {
   id: string;
   codename: string;
   created_at: number;
-  votes_cast: number;
-  agreement_sum: number;
-  agreement_count: number;
-  insider_flags: number;
 }
 
 interface IncidentRow {
@@ -98,15 +79,7 @@ interface VoteRow {
 }
 
 function analystFromRow(row: AnalystRow): Analyst {
-  return {
-    id: row.id,
-    codename: row.codename,
-    createdAt: row.created_at,
-    votesCast: row.votes_cast,
-    agreementSum: row.agreement_sum,
-    agreementCount: row.agreement_count,
-    insiderFlags: row.insider_flags,
-  };
+  return { id: row.id, codename: row.codename, createdAt: row.created_at, votesCast: 0 };
 }
 
 function incidentFromRow(row: IncidentRow): Incident {
@@ -115,7 +88,7 @@ function incidentFromRow(row: IncidentRow): Incident {
     title: row.title,
     description: row.description,
     category: row.category as IncidentCategory,
-    source: row.source as IncidentSource,
+    source: row.source as Incident["source"],
     createdBy: row.created_by,
     createdAt: row.created_at,
     status: row.status as Incident["status"],
@@ -149,28 +122,22 @@ export class Db {
   }
 
   getAnalyst(id: string): Analyst | undefined {
-    const row = this.raw.prepare("SELECT * FROM analysts WHERE id = ?").get(id) as unknown as AnalystRow | undefined;
+    const row = this.raw.prepare("SELECT id, codename, created_at FROM analysts WHERE id = ?").get(id) as unknown as
+      | AnalystRow
+      | undefined;
     return row ? analystFromRow(row) : undefined;
   }
 
-  // The moderator is whoever has the earliest `created_at` among all
-  // analysts ever seen — derived from persisted history, not a flag a
-  // client could spoof, so it survives restarts and redeploys. `id` is a
-  // TEXT primary key, so SQLite still keeps an implicit `rowid` that
-  // increases with insertion order; ordering by it breaks ties between two
-  // analysts created in the same millisecond by who was actually inserted
-  // first (ordering by `id` itself would effectively be random — UUIDs sort
-  // independently of creation order).
-  isModerator(id: string): boolean {
-    const row = this.raw
-      .prepare("SELECT id FROM analysts ORDER BY created_at ASC, rowid ASC LIMIT 1")
-      .get() as { id: string } | undefined;
-    return row?.id === id;
+  createAnalyst(id: string, codename: string): Analyst {
+    const createdAt = Date.now();
+    this.raw.prepare("INSERT INTO analysts (id, codename, created_at) VALUES (?, ?, ?)").run(id, codename, createdAt);
+    return { id, codename, createdAt, votesCast: 0 };
   }
 
-  // Persistence only — this is the durable record that outlives the
-  // process and the crit. Live, human-readable narration is a separate
-  // concern, handled by `narrate` in server/index.ts.
+  // Persistence only — the durable, queryable record of who did what, for
+  // the Week 11 authorization/logging requirement. Live, human-readable
+  // narration for the in-class demo is a separate concern (`narrate` in
+  // server/index.ts).
   logAction(analystId: string, codename: string, action: string, detail?: string): void {
     const at = Date.now();
     this.raw
@@ -178,39 +145,23 @@ export class Db {
       .run(analystId, codename, action, detail ?? null, at);
   }
 
-  createAnalyst(id: string, codename: string): Analyst {
-    const createdAt = Date.now();
-    this.raw
-      .prepare("INSERT INTO analysts (id, codename, created_at) VALUES (?, ?, ?)")
-      .run(id, codename, createdAt);
-    return { id, codename, createdAt, votesCast: 0, agreementSum: 0, agreementCount: 0, insiderFlags: 0 };
-  }
-
-  createIncident(input: {
-    id: string;
-    title: string;
-    description: string;
-    category: IncidentCategory;
-    source: IncidentSource;
-    createdBy: string | null;
-    status: "open" | "queued";
-  }): Incident {
+  createIncident(input: { id: string; title: string; description: string; category: IncidentCategory }): Incident {
     const createdAt = Date.now();
     this.raw
       .prepare(
         `INSERT INTO incidents (id, title, description, category, source, created_by, created_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, 'generator', NULL, ?, 'open')`,
       )
-      .run(input.id, input.title, input.description, input.category, input.source, input.createdBy, createdAt, input.status);
+      .run(input.id, input.title, input.description, input.category, createdAt);
     return {
       id: input.id,
       title: input.title,
       description: input.description,
       category: input.category,
-      source: input.source,
-      createdBy: input.createdBy,
+      source: "generator",
+      createdBy: null,
       createdAt,
-      status: input.status,
+      status: "open",
       resolvedAt: null,
       consensusSeverity: null,
       consensusLikelihood: null,
@@ -219,46 +170,9 @@ export class Db {
     };
   }
 
-  getQueuedIncidents(): Incident[] {
-    const rows = this.raw
-      .prepare("SELECT * FROM incidents WHERE status = 'queued' ORDER BY created_at ASC")
-      .all() as unknown as IncidentRow[];
-    return rows.map(incidentFromRow);
-  }
-
-  queuedIncidentCount(): number {
-    const row = this.raw.prepare("SELECT COUNT(*) AS n FROM incidents WHERE status = 'queued'").get() as { n: number };
-    return row.n;
-  }
-
-  // Activation stamps a fresh created_at so the 15s resolution timer and the
-  // client's countdown both start from when the threat actually goes live,
-  // not from when the analyst originally reported it.
-  activateIncident(id: string): Incident {
-    const createdAt = Date.now();
-    this.raw.prepare("UPDATE incidents SET status = 'open', created_at = ? WHERE id = ?").run(createdAt, id);
-    const incident = this.getIncident(id);
-    if (!incident) throw new Error(`incident ${id} vanished during activation`);
-    return incident;
-  }
-
   getIncident(id: string): Incident | undefined {
     const row = this.raw.prepare("SELECT * FROM incidents WHERE id = ?").get(id) as unknown as IncidentRow | undefined;
     return row ? incidentFromRow(row) : undefined;
-  }
-
-  getOpenIncidents(): Incident[] {
-    const rows = this.raw
-      .prepare("SELECT * FROM incidents WHERE status = 'open' ORDER BY created_at ASC")
-      .all() as unknown as IncidentRow[];
-    return rows.map(incidentFromRow);
-  }
-
-  getResolvedIncidents(limit: number): Incident[] {
-    const rows = this.raw
-      .prepare("SELECT * FROM incidents WHERE status = 'resolved' ORDER BY resolved_at DESC LIMIT ?")
-      .all(limit) as unknown as IncidentRow[];
-    return rows.map(incidentFromRow);
   }
 
   getVotes(incidentId: string): Vote[] {
@@ -268,17 +182,10 @@ export class Db {
     return rows.map(voteFromRow);
   }
 
-  getVoteCount(incidentId: string): number {
-    const row = this.raw
-      .prepare("SELECT COUNT(*) AS n FROM votes WHERE incident_id = ?")
-      .get(incidentId) as { n: number };
-    return row.n;
-  }
-
-  // Strict one-vote-per-analyst-per-threat: once a row exists for this
-  // (incident, analyst) pair, a further vote is rejected outright rather
-  // than updating it in place. Returns false if the analyst already voted
-  // on this incident, true if the vote was newly recorded.
+  // Strict one-session-one-vote-per-threat: a (incident, analyst) row, once
+  // inserted, can't be replaced — a second attempt is rejected outright
+  // rather than treated as an update. Returns false if this analyst already
+  // voted on this incident.
   insertVote(incidentId: string, analystId: string, severity: number, likelihood: number): boolean {
     const existing = this.raw
       .prepare("SELECT 1 FROM votes WHERE incident_id = ? AND analyst_id = ?")
@@ -289,7 +196,6 @@ export class Db {
     this.raw
       .prepare("INSERT INTO votes (incident_id, analyst_id, severity, likelihood, cast_at) VALUES (?, ?, ?, ?, ?)")
       .run(incidentId, analystId, severity, likelihood, castAt);
-    this.raw.prepare("UPDATE analysts SET votes_cast = votes_cast + 1 WHERE id = ?").run(analystId);
     return true;
   }
 
@@ -314,23 +220,6 @@ export class Db {
     return incident;
   }
 
-  recordAnalystOutcome(analystId: string, agreement: number, isInsiderOutlier: boolean): LeaderboardEntry {
-    this.raw
-      .prepare(
-        `UPDATE analysts SET agreement_sum = agreement_sum + ?, agreement_count = agreement_count + 1,
-         insider_flags = insider_flags + ? WHERE id = ?`,
-      )
-      .run(agreement, isInsiderOutlier ? 1 : 0, analystId);
-    const analyst = this.getAnalyst(analystId);
-    if (!analyst) throw new Error(`analyst ${analystId} vanished during stats update`);
-    return leaderboardEntry(analyst);
-  }
-
-  getLeaderboard(): LeaderboardEntry[] {
-    const rows = this.raw.prepare("SELECT * FROM analysts ORDER BY codename ASC").all() as unknown as AnalystRow[];
-    return rows.map(analystFromRow).map(leaderboardEntry);
-  }
-
   incidentView(incident: Incident): IncidentView {
     const rows = this.raw
       .prepare(
@@ -346,17 +235,4 @@ export class Db {
     }));
     return { ...incident, votes };
   }
-}
-
-function leaderboardEntry(analyst: Analyst): LeaderboardEntry {
-  const agreementRate = analyst.agreementCount > 0 ? analyst.agreementSum / analyst.agreementCount : null;
-  const insiderFlagged = analyst.agreementCount >= 3 && analyst.insiderFlags / analyst.agreementCount > 0.4;
-  return {
-    id: analyst.id,
-    codename: analyst.codename,
-    votesCast: analyst.votesCast,
-    agreementRate,
-    insiderFlags: analyst.insiderFlags,
-    insiderFlagged,
-  };
 }

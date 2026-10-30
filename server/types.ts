@@ -8,9 +8,6 @@ export interface Analyst {
   codename: string;
   createdAt: number;
   votesCast: number;
-  agreementSum: number;
-  agreementCount: number;
-  insiderFlags: number;
 }
 
 export interface Vote {
@@ -48,35 +45,60 @@ export interface IncidentView extends Incident {
   votes: VoteView[];
 }
 
-export interface LeaderboardEntry {
+// --- Among Us-style round game: lobby -> threat x3 -> audit -> resolved ---
+
+export type GamePhase = "lobby" | "threat" | "audit" | "resolved";
+export type GameRole = "ANALYST" | "INSIDER_THREAT";
+
+export interface PlayerInfo {
   id: string;
   codename: string;
-  votesCast: number;
-  agreementRate: number | null;
-  insiderFlags: number;
-  insiderFlagged: boolean;
 }
 
-export type Role = "analyst" | "saboteur";
+export type GameSnapshot =
+  | { phase: "lobby"; players: PlayerInfo[]; readyToStart: boolean }
+  | { phase: "threat"; role: GameRole; threatIndex: number; totalThreats: number; deadline: number; active: IncidentView }
+  | { phase: "audit"; role: GameRole; deadline: number; candidates: PlayerInfo[]; tally: Record<string, number> }
+  | {
+      phase: "resolved";
+      role: GameRole;
+      ejectedId: string | null;
+      ejectedCodename: string | null;
+      wasInsider: boolean;
+      winner: "ANALYSTS" | "INSIDER";
+      insiderCodename: string;
+      youWereRevoked: boolean;
+    };
 
 export type ServerMessage =
-  | {
-      type: "hello";
-      me: { id: string; codename: string; isModerator: boolean };
-      role: Role;
-      active: IncidentView | null;
-      queueLength: number;
-      recentResolved: Incident[];
-      leaderboard: LeaderboardEntry[];
-    }
-  | { type: "incident:new"; incident: IncidentView }
+  | ({ type: "hello"; me: { id: string; codename: string } } & GameSnapshot)
+  | { type: "lobby:update"; players: PlayerInfo[]; readyToStart: boolean }
+  | { type: "game:role"; role: GameRole }
+  | { type: "threat:new"; incident: IncidentView; threatIndex: number; totalThreats: number; deadline: number }
   | { type: "vote:cast"; incidentId: string; analystId: string; codename: string; severity: number; likelihood: number }
-  | { type: "incident:resolved"; incident: Incident }
-  | { type: "analyst:stats"; entry: LeaderboardEntry }
-  | { type: "queue:update"; queueLength: number }
-  | { type: "role:assign"; role: Role };
+  | { type: "threat:resolved"; incident: Incident; threatIndex: number }
+  | { type: "audit:start"; deadline: number; candidates: PlayerInfo[] }
+  | {
+      type: "audit:tally";
+      voterId: string;
+      voterCodename: string;
+      targetId: string;
+      targetCodename: string;
+      tally: Record<string, number>;
+    }
+  | {
+      type: "game:ejected";
+      ejectedId: string | null;
+      ejectedCodename: string | null;
+      wasInsider: boolean;
+      winner: "ANALYSTS" | "INSIDER";
+      insiderCodename: string;
+    }
+  | { type: "game:revoked" }
+  | { type: "game:reset" };
 
 export type ClientMessage =
+  | { type: "game:start" }
   | { type: "vote"; incidentId: string; severity: number; likelihood: number }
-  | { type: "incident:create"; title: string; description: string; category: IncidentCategory }
-  | { type: "moderator:resolve-now" };
+  | { type: "audit:vote"; targetId: string }
+  | { type: "game:play-again" };

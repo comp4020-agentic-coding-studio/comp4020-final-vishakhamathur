@@ -44,20 +44,3 @@ export function resolveConsensus(votes: Vote[]): Resolution {
 
   return { consensusSeverity, consensusLikelihood, consensusScore, agreement, outcome };
 }
-
-// Max per-vote deviation from the mean on a 1..10 scale, on both axes at once.
-const MAX_DEVIATION = 9;
-
-export interface AnalystOutcome {
-  analystId: string;
-  agreement: number;
-  isInsiderOutlier: boolean;
-}
-
-export function analystAgreements(votes: Vote[], consensusSeverity: number, consensusLikelihood: number): AnalystOutcome[] {
-  return votes.map((v) => {
-    const deviation = Math.sqrt(((v.severity - consensusSeverity) ** 2 + (v.likelihood - consensusLikelihood) ** 2) / 2);
-    const agreement = clamp(1 - deviation / MAX_DEVIATION, 0, 1);
-    return { analystId: v.analystId, agreement, isInsiderOutlier: agreement < 0.3 };
-  });
-}

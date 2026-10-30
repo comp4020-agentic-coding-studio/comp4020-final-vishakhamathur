@@ -1,92 +1,77 @@
 # Cyber Threat Consensus Board
 
-A real-time SOC triage simulator. The server invents plausible-sounding
-security incidents — a login spike, an odd outbound transfer, a port scan —
-and anonymous "analysts" who show up vote on how severe and how likely each
-one is. Votes land on a shared risk matrix live, as they're cast, and once
-enough analysts have weighed in (or enough time has passed) the incident
-resolves into a consensus score and a true/false-positive call. Analysts who
-keep voting against the room's grain pick up an "insider threat" flag over
-time.
+A live, in-person Security Operations Center (SOC) social-deduction game.
+The server invents plausible security incidents — a login spike, an odd
+outbound transfer — and connected analysts vote on how severe and likely
+each one is. One connected analyst is secretly the **Insider Threat**,
+quietly dragging the room's votes off target; everyone else's job is to
+catch them before the shift ends.
 
 ## Who this is for
 
-Small, synchronous groups: the four or five people in a crit room, a handful
-of friends who open the link at the same time to see what the group converges
-on. It is not trying to be a real SOC tool, and it doesn't pretend the
-incidents are real — the point is watching triage-under-pressure happen as a
-social, visible process, not an automated one. At zero visitors the generator
-is still quietly inventing incidents nobody looks at; that's fine. This is
-software for an afternoon, not a shift roster.
+A small, synchronous room: four or five people in a crit room, friends on
+the same link at once. Built to be narrated live — a presenter reads the
+terminal aloud while the room plays — not used solo. Software for an
+afternoon together, not a shift roster.
 
 ## What "good" means here
 
-1. **Consensus is visible, not just computed.** The risk matrix updates the
-   instant someone votes, for everyone watching — the point isn't the final
-   score, it's seeing the room converge (or not) in real time. A version of
-   this app that only showed the final verdict would miss the thing that
-   makes it interesting.
-2. **Disagreement is data, not noise.** The "insider threat" flag exists
-   specifically so that outlier voting has a visible consequence, the same
-   way a real SOC would ask why one analyst keeps calling wolf (or keeps
-   waving things through). It only applies after three resolved incidents,
-   so one unlucky vote doesn't brand anyone.
-3. **Nothing about this needs to be fast or scale.** Per the brief's framing
-   of small-scale, low-traffic software: an incident every 45–90 seconds and
-   a handful of concurrent voters is the whole expected load. The app is
-   built — one SQLite file, one process, no queue, no cache — for that scale
-   on purpose, not as a shortcut.
-4. **A visitor's trace outlives their visit.** Your analyst codename, your
-   agreement rate, and every incident's resolved outcome are still there if
-   you close the tab and come back, or if the app restarts. That's the
-   multi-user, persistent claim made concrete, not just a line in a spec.
+1. **One shift, start to finish, with a resolution everyone can see.** A
+   lobby waits for enough people; `Start Shift` kicks off three timed
+   threats back to back; a Security Audit vote ends the round with a clear
+   winner. No ambiguity about when the game is "on."
+2. **The Insider Threat's only move is social.** Nothing they submit is
+   mechanically different from any other analyst — same sliders, same vote
+   shape. The only way to catch them is watching how people vote and
+   talking about it out loud.
+3. **Authorization is server-enforced, not UI-enforced, and narratable.**
+   One vote per session per threat, one audit vote per round, a real quorum
+   to start a shift — all checked against the server's own state, never a
+   client's claim — and every one of those events writes a one-line,
+   read-aloud log entry, so a presenter can run the whole demo from
+   `flyctl logs` without touching the app.
 
-## Using it
+## Playing a shift
 
-Open the app, and you're assigned a codename (e.g. "Agent Crimson Hawk-7")
-for the session — no sign-up. Vote severity and likelihood (1–5) on any open
-incident with the sliders; the risk matrix and leaderboard update for
-everyone live. You can also report your own incident via the form, which
-behaves exactly like a generator-made one once it's live. The leaderboard
-shows how often each analyst's votes have matched the room's eventual
-consensus.
+Open the app and you're assigned a codename (e.g. "Agent Crimson Hawk-7")
+— no sign-up. Once three analysts are connected, anyone can click
+**Start Shift**. The server secretly assigns one connected analyst as the
+**Insider Threat**; everyone else is an **Analyst**, and each person sees
+only their own role.
 
-## Roles and permissions
+Three threats run one after another with a 15-second countdown each. Drag
+**Severity** and **Likelihood** (1–10) and click **Cast vote** — one vote
+per analyst per threat, server-enforced, locking in once cast. Votes land
+on the shared risk matrix live for everyone watching.
 
-The first analyst the app has ever seen is the **Moderator** — everyone
-after that is a regular **Analyst**. The only thing this unlocks is a
-"Resolve now" button that ends the active incident immediately instead of
-waiting out its countdown; every other action (voting, reporting) works the
-same for both roles. The server enforces this itself (a non-moderator's
-request to resolve early is rejected with a 403, not just hidden in the
-UI), and the reasoning behind who gets the role and why is in `PROCESS.md`.
-Every vote, report, and moderator action is written to a persistent,
-attributed log that survives restarts — see `PROCESS.md` for how.
+Once all three resolve, a 30-second **Security Audit** begins: the matrix
+is replaced by a list of connected codenames. Click one to vote to
+**Revoke** them. Whoever has the most votes when the clock hits zero is
+ejected — their screen locks under a full-screen
+`[CREDENTIALS REVOKED] ACCESS DENIED` banner — and the room learns whether
+the ejected analyst really was the Insider.
 
-## Playing it as a room
+Eject the real Insider → **Analysts win**. Eject an innocent Analyst, or
+reach no majority → **Insider wins**.
 
-Every round, exactly one connected analyst is secretly the **Saboteur** —
-everyone sees "ROLE: ANALYST" except that one person, who sees "SECRET
-ROLE: SABOTEUR — Drag the consensus off target!" It's social, not
-mechanical: nothing about what a Saboteur can submit is different, so the
-only way to find them is to watch who's voting oddly and guess. The role
-resets every round and isn't tied to anything that survives a restart —
-it's a game layer on top of the triage loop, not a new permission. The
-15-second countdown ticks audibly in its last 5 seconds and flashes red on
-screen, then plays a ding if the room's votes landed close together or a
-buzzer if they were scattered.
+## Roles and the log
+
+Two round roles, **Analyst** and **Insider Threat**, assigned fresh each
+shift and never persisted — the role only changes what's shown, never what
+the server accepts. Every vote, denial, audit vote, and ejection also
+writes a durable row to `action_log` under `/data`, alongside the
+human-readable terminal line — see `PROCESS.md` for how each check works
+and the full log tag list.
 
 ## What this draft doesn't claim
 
-The consensus/outlier scoring is a simple, explainable first pass
-(documented in `PROCESS.md`), not a claim about real threat-detection
-quality. There are still no accounts and no incident severity beyond what
-analysts assign it. What "good" means here is expected to keep sharpening
-as the loop gets used.
+Each threat's true/false-positive call is a simple first pass
+(`PROCESS.md`) — mostly flavor here, since the real objective is finding
+the Insider Threat, not getting every verdict right. No accounts; identity
+is just a signed cookie.
 
 ## Sources
 
 Framed against the brief's own small-scale precedents — software built for
-one room, one afternoon, one specific group — rather than against enterprise
-SOC dashboards, which assume a scale and a seriousness this app deliberately
-doesn't have.
+one room, one afternoon, one group — rather than enterprise SOC dashboards
+or commercial social-deduction games, neither of which this tries to be.

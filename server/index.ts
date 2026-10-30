@@ -5,28 +5,29 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 import { WebSocketServer } from "ws";
 import { Db } from "./db.ts";
-import { analystAgreements, resolveConsensus } from "./consensus.ts";
-import { generateThreat, INCIDENT_CATEGORIES } from "./generator.ts";
+import { resolveConsensus } from "./consensus.ts";
+import { generateThreat } from "./generator.ts";
 import { analystCookieHeader, generateCodename, IdentitySigner, readAnalystCookie } from "./identity.ts";
 import { renderReadmePage } from "./readme.ts";
 import { Hub } from "./ws.ts";
-import type { Analyst, ClientMessage, IncidentCategory, Role } from "./types.ts";
+import type { Analyst, ClientMessage, GamePhase, GameRole, GameSnapshot, PlayerInfo } from "./types.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const DATA_DIR = process.env.DATA_DIR ?? "./data";
-const ACTIVE_DURATION_MS = 15_000;
-const MAX_QUEUED = 5;
+const THREAT_DURATION_MS = Number(process.env.THREAT_DURATION_MS ?? 15_000);
+const AUDIT_DURATION_MS = Number(process.env.AUDIT_DURATION_MS ?? 30_000);
+const TOTAL_THREATS = 3;
+const MIN_PLAYERS = 3;
 
 const db = new Db(DATA_DIR);
 const signer = new IdentitySigner(DATA_DIR);
 const hub = new Hub();
 
-// Live narration for the crit demo: the presenter reads these off `flyctl
-// logs` while never touching the app, so every tag names an actor and every
-// line is self-contained (no scrolling back for context). `logAction`
-// writes the durable, queryable record to `/data`; `narrate` is the
-// human-readable stream for reading along live. Keep both in sync at each
-// call site rather than trying to derive one from the other.
+// Live narration for the in-class demo: the presenter reads these off
+// `flyctl logs` / the terminal while never touching the app, so every tag
+// names an actor and every line is self-contained. `logAction` writes the
+// durable, queryable record to `/data`; `narrate` is the human-readable
+// stream read aloud live. Keep both in sync at each call site.
 function shortId(id: string): string {
   return id.slice(0, 8);
 }
@@ -43,62 +44,157 @@ function resolveIdentity(req: IncomingMessage, res: ServerResponse): Analyst {
     const existing = db.getAnalyst(verifiedId);
     if (existing) return existing;
     const created = db.createAnalyst(verifiedId, generateCodename());
-    narrate("NEW", `User '${created.codename}' identified (SessionID: ${shortId(created.id)})`);
+    narrate("NEW", `User '${created.codename}' identified (Session: ${shortId(created.id)})`);
     return created;
   }
 
   const minted = signer.mint();
   res.setHeader("Set-Cookie", analystCookieHeader(minted.cookie));
   const created = db.createAnalyst(minted.id, generateCodename());
-  narrate("NEW", `User '${created.codename}' identified (SessionID: ${shortId(created.id)})`);
+  narrate("NEW", `User '${created.codename}' identified (Session: ${shortId(created.id)})`);
   return created;
 }
 
-// Active incident's resolution timer, so a moderator's "resolve now" can
-// cancel the pending timeout instead of racing it (both would otherwise
-// try to resolve + advance the same incident).
-let activeTimer: NodeJS.Timeout | null = null;
-
-// Secret Saboteur: a per-round game role, reassigned from scratch for every
-// new active incident. Deliberately in-memory only (not a DB column, not
-// logged with a codename attached) — unlike the moderator role, there's
-// nothing here that needs to survive a restart, and naming the saboteur in
-// the narration stream the crit demo reads live would spoil the one thing
-// that's supposed to stay secret.
-let currentSaboteurId: string | null = null;
-
-function roleFor(analystId: string): Role {
-  return analystId === currentSaboteurId ? "saboteur" : "analyst";
+function codenameOf(id: string): string {
+  return db.getAnalyst(id)?.codename ?? "Unknown";
 }
 
-// Picks one connected analyst (across however many tabs they have open) to
-// be this round's saboteur and tells every socket its role. The saboteur's
-// own socket(s) get the "analyst" broadcast first and the "saboteur"
-// message second, so the more specific message wins rather than being
-// clobbered back to "analyst".
-function assignSaboteur(): void {
+function playerInfo(id: string): PlayerInfo {
+  return { id, codename: codenameOf(id) };
+}
+
+function connectedPlayers(): PlayerInfo[] {
+  return hub.connectedAnalystIds().map(playerInfo);
+}
+
+// --- Among Us-style round: lobby -> threat x3 -> audit -> resolved ---
+
+let gamePhase: GamePhase = "lobby";
+let insiderId: string | null = null;
+let threatIndex = 0;
+let currentIncidentId: string | null = null;
+let phaseDeadline = 0;
+let gameTimer: NodeJS.Timeout | null = null;
+// voterId -> targetId. In-memory only, like the round itself — nothing here
+// needs to survive a restart, a restart just means the in-flight round gets
+// reset along with everything else.
+let auditVotes = new Map<string, string>();
+let lastResult: {
+  ejectedId: string | null;
+  ejectedCodename: string | null;
+  wasInsider: boolean;
+  winner: "ANALYSTS" | "INSIDER";
+  insiderCodename: string;
+} | null = null;
+
+function roleFor(analystId: string): GameRole {
+  return analystId === insiderId ? "INSIDER_THREAT" : "ANALYST";
+}
+
+function tally(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const targetId of auditVotes.values()) counts[targetId] = (counts[targetId] ?? 0) + 1;
+  return counts;
+}
+
+function gameSnapshotFor(analystId: string): GameSnapshot {
+  if (gamePhase === "lobby") {
+    const players = connectedPlayers();
+    return { phase: "lobby", players, readyToStart: players.length >= MIN_PLAYERS };
+  }
+  const role = roleFor(analystId);
+  if (gamePhase === "threat") {
+    const incident = db.getIncident(currentIncidentId!)!;
+    return {
+      phase: "threat",
+      role,
+      threatIndex,
+      totalThreats: TOTAL_THREATS,
+      deadline: phaseDeadline,
+      active: db.incidentView(incident),
+    };
+  }
+  if (gamePhase === "audit") {
+    return { phase: "audit", role, deadline: phaseDeadline, candidates: connectedPlayers(), tally: tally() };
+  }
+  const r = lastResult!;
+  return {
+    phase: "resolved",
+    role,
+    ejectedId: r.ejectedId,
+    ejectedCodename: r.ejectedCodename,
+    wasInsider: r.wasInsider,
+    winner: r.winner,
+    insiderCodename: r.insiderCodename,
+    youWereRevoked: r.ejectedId === analystId,
+  };
+}
+
+function broadcastLobby(): void {
+  if (gamePhase !== "lobby") return;
+  const players = connectedPlayers();
+  hub.broadcast({ type: "lobby:update", players, readyToStart: players.length >= MIN_PLAYERS });
+}
+
+// Authorization: only starts the round when at least MIN_PLAYERS distinct
+// sessions are connected, and only from the lobby — enforced here, not just
+// hidden client-side. Returns false (not a thrown error) for a precondition
+// that isn't met, same convention as the rest of this file's action functions.
+function startGame(initiator: Analyst): boolean {
+  if (gamePhase !== "lobby") {
+    db.logAction(initiator.id, initiator.codename, "game:start:denied", "reason=already-started");
+    narrate("DENIED", `User '${initiator.codename}' attempted to start a round that's already in progress.`);
+    return false;
+  }
   const candidates = hub.connectedAnalystIds();
-  currentSaboteurId = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)]! : null;
-  hub.broadcast({ type: "role:assign", role: "analyst" });
-  if (currentSaboteurId) hub.sendTo(currentSaboteurId, { type: "role:assign", role: "saboteur" });
-  narrate("ROLE", "Secret Saboteur assigned for this round.");
+  if (candidates.length < MIN_PLAYERS) {
+    db.logAction(initiator.id, initiator.codename, "game:start:denied", `reason=not-enough-players count=${candidates.length}`);
+    narrate(
+      "DENIED",
+      `User '${initiator.codename}' tried to start the shift with only ${candidates.length} connected (need ${MIN_PLAYERS}).`,
+    );
+    return false;
+  }
+
+  insiderId = candidates[Math.floor(Math.random() * candidates.length)]!;
+  for (const id of candidates) {
+    hub.sendTo(id, { type: "game:role", role: roleFor(id) });
+  }
+  db.logAction(initiator.id, initiator.codename, "game:start", `players=${candidates.length}`);
+  narrate("ROLE", `Assigned INSIDER THREAT to: ${codenameOf(insiderId)}`);
+
+  threatIndex = 0;
+  startThreat();
+  return true;
 }
 
-// "Won by" framing for the narration line: who the consensus sided with,
-// in terms a non-technical listener following along from logs can parse.
-const OUTCOME_LABEL: Record<string, string> = {
-  true_positive: "Analysts (confirmed threat)",
-  false_positive: "Analysts (false alarm)",
-  unresolved: "Nobody — no consensus reached",
-  ignored: "Nobody — no votes cast",
-};
+function startThreat(): void {
+  gamePhase = "threat";
+  const threat = generateThreat();
+  const incident = db.createIncident({ id: randomUUID(), title: threat.title, description: threat.description, category: threat.category });
+  currentIncidentId = incident.id;
+  phaseDeadline = Date.now() + THREAT_DURATION_MS;
 
-function finishIncident(incidentId: string): void {
+  hub.broadcast({
+    type: "threat:new",
+    incident: db.incidentView(incident),
+    threatIndex,
+    totalThreats: TOTAL_THREATS,
+    deadline: phaseDeadline,
+  });
+  narrate(
+    "THREAT",
+    `New active threat (${threatIndex + 1}/${TOTAL_THREATS}) — ID: ${shortId(incident.id)} "${incident.title}"`,
+  );
+
+  gameTimer = setTimeout(() => finishThreat(incident.id), THREAT_DURATION_MS);
+}
+
+function finishThreat(incidentId: string): void {
   const incident = db.getIncident(incidentId);
   if (!incident || incident.status !== "open") return;
 
   const votes = db.getVotes(incidentId);
-
   if (votes.length === 0) {
     const resolved = db.resolveIncident(incidentId, {
       consensusSeverity: null,
@@ -106,113 +202,102 @@ function finishIncident(incidentId: string): void {
       consensusScore: null,
       outcome: "ignored",
     });
-    hub.broadcast({ type: "incident:resolved", incident: resolved });
+    hub.broadcast({ type: "threat:resolved", incident: resolved, threatIndex });
+    narrate("RESOLVE", `Threat ID: ${shortId(incidentId)} resolved with no votes cast.`);
+  } else {
+    const resolution = resolveConsensus(votes);
+    const resolved = db.resolveIncident(incidentId, {
+      consensusSeverity: resolution.consensusSeverity,
+      consensusLikelihood: resolution.consensusLikelihood,
+      consensusScore: resolution.consensusScore,
+      outcome: resolution.outcome,
+    });
+    hub.broadcast({ type: "threat:resolved", incident: resolved, threatIndex });
     narrate(
       "RESOLVE",
-      `Threat ID: ${shortId(incidentId)} resolved. Consensus: none. Won by: ${OUTCOME_LABEL.ignored}.`,
+      `Threat ID: ${shortId(incidentId)} resolved. Outcome: ${resolution.outcome} (consensus score ${resolution.consensusScore}).`,
     );
-    return;
   }
 
-  const resolution = resolveConsensus(votes);
-  const resolved = db.resolveIncident(incidentId, {
-    consensusSeverity: resolution.consensusSeverity,
-    consensusLikelihood: resolution.consensusLikelihood,
-    consensusScore: resolution.consensusScore,
-    outcome: resolution.outcome,
-  });
-  hub.broadcast({ type: "incident:resolved", incident: resolved });
-  // "Consensus" in the narration is the severity/likelihood blend on the
-  // same 1-10 scale analysts voted on (not `consensusScore`, which is the
-  // 0-100 *agreement* percentage) — the number a listener following along
-  // actually wants is "how bad did the room say this was."
-  const consensusLevel = ((resolution.consensusSeverity + resolution.consensusLikelihood) / 2).toFixed(1);
-  narrate(
-    "RESOLVE",
-    `Threat ID: ${shortId(incidentId)} resolved. Consensus: ${consensusLevel}. Won by: ${OUTCOME_LABEL[resolution.outcome]}.`,
-  );
+  threatIndex += 1;
+  if (threatIndex < TOTAL_THREATS) {
+    startThreat();
+  } else {
+    startAudit();
+  }
+}
 
-  for (const outcome of analystAgreements(votes, resolution.consensusSeverity, resolution.consensusLikelihood)) {
-    const entry = db.recordAnalystOutcome(outcome.analystId, outcome.agreement, outcome.isInsiderOutlier);
-    hub.broadcast({ type: "analyst:stats", entry });
-    if (outcome.isInsiderOutlier) {
-      narrate("FLAG", `User '${entry.codename}' flagged as possible insider (agreement: ${Math.round(outcome.agreement * 100)}%)`);
+function startAudit(): void {
+  gamePhase = "audit";
+  auditVotes = new Map();
+  phaseDeadline = Date.now() + AUDIT_DURATION_MS;
+  const candidates = connectedPlayers();
+
+  hub.broadcast({ type: "audit:start", deadline: phaseDeadline, candidates });
+  narrate("AUDIT STARTED", "30-second voting phase initiated.");
+
+  gameTimer = setTimeout(() => finishAudit(), AUDIT_DURATION_MS);
+}
+
+function finishAudit(): void {
+  const counts = tally();
+  let ejectedId: string | null = null;
+  let topCount = 0;
+  let tied = false;
+  for (const [id, count] of Object.entries(counts)) {
+    if (count > topCount) {
+      topCount = count;
+      ejectedId = id;
+      tied = false;
+    } else if (count === topCount && topCount > 0) {
+      tied = true;
     }
   }
+  if (tied) ejectedId = null;
+
+  const wasInsider = ejectedId !== null && ejectedId === insiderId;
+  const winner: "ANALYSTS" | "INSIDER" = wasInsider ? "ANALYSTS" : "INSIDER";
+  const insiderCodename = codenameOf(insiderId!);
+  const ejectedCodename = ejectedId ? codenameOf(ejectedId) : null;
+
+  lastResult = { ejectedId, ejectedCodename, wasInsider, winner, insiderCodename };
+  gamePhase = "resolved";
+
+  hub.broadcast({ type: "game:ejected", ejectedId, ejectedCodename, wasInsider, winner, insiderCodename });
+
+  if (ejectedId) {
+    narrate("EJECTED", `${ejectedCodename} was ejected. They ${wasInsider ? "WERE" : "WERE NOT"} the Insider Threat.`);
+    hub.sendTo(ejectedId, { type: "game:revoked" });
+  } else {
+    narrate("EJECTED", `No one reached a majority — nobody was ejected. The Insider Threat was ${insiderCodename}.`);
+  }
 }
 
-function resolveActive(incidentId: string): void {
-  finishIncident(incidentId);
-  startNextIncident();
-}
-
-// Focus Mode: exactly one threat is ever active. The next one comes from the
-// analyst report queue first (FIFO), falling back to the ambient generator,
-// and runs for a strict ACTIVE_DURATION_MS before resolveActive fires again.
-function startNextIncident(): void {
-  const queued = db.getQueuedIncidents()[0];
-  const incident = queued
-    ? db.activateIncident(queued.id)
-    : (() => {
-        const threat = generateThreat();
-        return db.createIncident({
-          id: randomUUID(),
-          title: threat.title,
-          description: threat.description,
-          category: threat.category,
-          source: "generator",
-          createdBy: null,
-          status: "open",
-        });
-      })();
-
-  if (queued) hub.broadcast({ type: "queue:update", queueLength: db.queuedIncidentCount() });
-  hub.broadcast({ type: "incident:new", incident: db.incidentView(incident) });
-  narrate(
-    "THREAT",
-    `New active threat — ID: ${shortId(incident.id)} "${incident.title}" (${incident.source === "analyst" ? "analyst-reported" : "auto-generated"})`,
-  );
-  assignSaboteur();
-  activeTimer = setTimeout(() => resolveActive(incident.id), ACTIVE_DURATION_MS);
-}
-
-// Moderator-only: skip the remaining countdown and resolve the active
-// incident immediately, then advance Focus Mode as usual. Returns false if
-// there's nothing active to resolve (nothing for the caller to do, not a
-// permission failure — the permission check happens before this is called).
-function moderatorResolveNow(): boolean {
-  const active = db.getOpenIncidents()[0];
-  if (!active) return false;
-  if (activeTimer) clearTimeout(activeTimer);
-  resolveActive(active.id);
-  return true;
-}
-
+// Strict server-side authorization: a session can only submit one vote per
+// threat (db.insertVote enforces the (incident, analyst) uniqueness), and
+// only while that exact threat is the active one — never trusts anything the
+// client claims about phase or incident id.
 function castVote(analyst: Analyst, incidentId: string, severity: number, likelihood: number): boolean {
-  const incident = db.getIncident(incidentId);
-  if (!incident || incident.status !== "open") {
-    db.logAction(analyst.id, analyst.codename, "vote:denied", `incident=${incidentId} reason=not-open`);
-    narrate("DENIED", `User '${analyst.codename}' attempted to vote on Threat ID: ${shortId(incidentId)}, but it is not currently active.`);
+  if (gamePhase !== "threat" || incidentId !== currentIncidentId) {
+    db.logAction(analyst.id, analyst.codename, "vote:denied", `incident=${incidentId} reason=not-active`);
+    narrate("DENIED", `${analyst.codename} attempted to vote outside the active threat window.`);
     return false;
   }
   if (!Number.isInteger(severity) || severity < 1 || severity > 10 || !Number.isInteger(likelihood) || likelihood < 1 || likelihood > 10) {
     db.logAction(analyst.id, analyst.codename, "vote:denied", `incident=${incidentId} reason=invalid-range severity=${severity} likelihood=${likelihood}`);
-    narrate("DENIED", `User '${analyst.codename}' submitted an out-of-range vote (Sev: ${severity}, Lik: ${likelihood}) on Threat ID: ${shortId(incidentId)}.`);
+    narrate("DENIED", `${analyst.codename} submitted an out-of-range vote (Sev: ${severity}, Lik: ${likelihood}).`);
     return false;
   }
 
-  // Strict one-vote-per-analyst-per-threat: a second attempt on the same
-  // incident is rejected, not treated as an update, regardless of whether
-  // it arrived over REST or the WS path.
   const inserted = db.insertVote(incidentId, analyst.id, severity, likelihood);
   if (!inserted) {
     db.logAction(analyst.id, analyst.codename, "vote:denied", `incident=${incidentId} reason=already-voted`);
-    narrate("DENIED", `User '${analyst.codename}' attempted to vote twice on Threat ID: ${shortId(incidentId)}.`);
+    narrate("DENIED", `${analyst.codename} attempted to vote twice on same threat.`);
     return false;
   }
 
   db.logAction(analyst.id, analyst.codename, "vote", `incident=${incidentId} severity=${severity} likelihood=${likelihood}`);
-  narrate("VOTE", `User '${analyst.codename}' voted Sev: ${severity}, Lik: ${likelihood} on Threat ID: ${shortId(incidentId)}`);
+  narrate("VOTE", `${analyst.codename} locked in Sev: ${severity}, Lik: ${likelihood}.`);
   hub.broadcast({
     type: "vote:cast",
     incidentId,
@@ -224,49 +309,59 @@ function castVote(analyst: Analyst, incidentId: string, severity: number, likeli
   return true;
 }
 
-function reportIncident(analyst: Analyst, title: string, description: string, category: IncidentCategory): boolean {
-  if (!title.trim() || !description.trim()) {
-    db.logAction(analyst.id, analyst.codename, "report:denied", "reason=missing-fields");
-    narrate("DENIED", `User '${analyst.codename}' submitted an incomplete incident report.`);
+// Same authorization posture as castVote: one audit vote per session per
+// round, only accepted during the audit phase, and only naming a currently
+// connected player — all checked server-side regardless of what the UI
+// would have let a well-behaved client submit.
+function castAuditVote(analyst: Analyst, targetId: string): boolean {
+  if (gamePhase !== "audit") {
+    db.logAction(analyst.id, analyst.codename, "audit:vote:denied", "reason=not-audit-phase");
+    narrate("DENIED", `${analyst.codename} attempted to cast an audit vote outside the audit phase.`);
     return false;
   }
-  if (!INCIDENT_CATEGORIES.includes(category)) {
-    db.logAction(analyst.id, analyst.codename, "report:denied", `reason=invalid-category category=${category}`);
-    narrate("DENIED", `User '${analyst.codename}' submitted a report with an invalid category.`);
+  if (auditVotes.has(analyst.id)) {
+    db.logAction(analyst.id, analyst.codename, "audit:vote:denied", "reason=already-voted");
+    narrate("DENIED", `${analyst.codename} attempted to vote twice in the audit.`);
     return false;
   }
-  if (db.queuedIncidentCount() >= MAX_QUEUED) {
-    db.logAction(analyst.id, analyst.codename, "report:denied", "reason=queue-full");
-    narrate("DENIED", `User '${analyst.codename}' attempted to report an incident, but the queue is full.`);
+  if (!hub.connectedAnalystIds().includes(targetId)) {
+    db.logAction(analyst.id, analyst.codename, "audit:vote:denied", `reason=invalid-target target=${targetId}`);
+    narrate("DENIED", `${analyst.codename} attempted to vote for a codename that isn't connected.`);
     return false;
   }
 
-  const trimmedTitle = title.trim().slice(0, 200);
-  db.createIncident({
-    id: randomUUID(),
-    title: trimmedTitle,
-    description: description.trim().slice(0, 1000),
-    category,
-    source: "analyst",
-    createdBy: analyst.id,
-    status: "queued",
+  auditVotes.set(analyst.id, targetId);
+  db.logAction(analyst.id, analyst.codename, "audit:vote", `target=${targetId}`);
+  narrate("AUDIT VOTE", `${analyst.codename} voted to revoke ${codenameOf(targetId)}.`);
+  hub.broadcast({
+    type: "audit:tally",
+    voterId: analyst.id,
+    voterCodename: analyst.codename,
+    targetId,
+    targetCodename: codenameOf(targetId),
+    tally: tally(),
   });
-  db.logAction(analyst.id, analyst.codename, "report", `title=${JSON.stringify(trimmedTitle)}`);
-  narrate("REPORT", `User '${analyst.codename}' reported new incident: "${trimmedTitle}"`);
-  hub.broadcast({ type: "queue:update", queueLength: db.queuedIncidentCount() });
   return true;
 }
 
-function stateSnapshot(analyst: Analyst) {
-  const open = db.getOpenIncidents()[0];
-  return {
-    me: { id: analyst.id, codename: analyst.codename, isModerator: db.isModerator(analyst.id) },
-    role: roleFor(analyst.id),
-    active: open ? db.incidentView(open) : null,
-    queueLength: db.queuedIncidentCount(),
-    recentResolved: db.getResolvedIncidents(20),
-    leaderboard: db.getLeaderboard(),
-  };
+function playAgain(analyst: Analyst): boolean {
+  if (gamePhase !== "resolved") {
+    db.logAction(analyst.id, analyst.codename, "game:play-again:denied", "reason=round-not-resolved");
+    narrate("DENIED", `${analyst.codename} attempted to start a new round before this one resolved.`);
+    return false;
+  }
+  if (gameTimer) clearTimeout(gameTimer);
+  gamePhase = "lobby";
+  insiderId = null;
+  threatIndex = 0;
+  currentIncidentId = null;
+  auditVotes = new Map();
+  lastResult = null;
+  db.logAction(analyst.id, analyst.codename, "game:play-again");
+  narrate("RESET", `${analyst.codename} reset the room for a new shift.`);
+  hub.broadcast({ type: "game:reset" });
+  broadcastLobby();
+  return true;
 }
 
 const STATIC_TYPES: Record<string, string> = {
@@ -320,7 +415,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && (url.pathname === "/style.css" || url.pathname === "/app.js")) {
+  if (req.method === "GET" && (url.pathname === "/style.css" || url.pathname === "/app.js" || url.pathname === "/intro.js")) {
     if (serveStatic(join("public", url.pathname), res)) return;
   }
 
@@ -330,36 +425,25 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/state") {
+  if (req.method === "GET" && url.pathname === "/api/game/state") {
     const analyst = resolveIdentity(req, res);
-    sendJson(res, 200, stateSnapshot(analyst));
+    sendJson(res, 200, {
+      me: { id: analyst.id, codename: analyst.codename },
+      ...gameSnapshotFor(analyst.id),
+    });
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/incidents") {
+  if (req.method === "POST" && url.pathname === "/api/game/start") {
     const analyst = resolveIdentity(req, res);
-    const body = (await readJsonBody(req)) as Partial<{ title: string; description: string; category: string }>;
-    const ok = reportIncident(
-      analyst,
-      String(body.title ?? ""),
-      String(body.description ?? ""),
-      String(body.category ?? "") as IncidentCategory,
-    );
-    sendJson(res, ok ? 201 : 400, { ok });
+    const ok = startGame(analyst);
+    sendJson(res, ok ? 200 : 400, { ok });
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/moderator/resolve-now") {
+  if (req.method === "POST" && url.pathname === "/api/game/play-again") {
     const analyst = resolveIdentity(req, res);
-    if (!db.isModerator(analyst.id)) {
-      db.logAction(analyst.id, analyst.codename, "resolve-now:denied");
-      narrate("DENIED", `User '${analyst.codename}' attempted a moderator-only action (resolve-now) without permission.`);
-      sendJson(res, 403, { ok: false, error: "moderator only" });
-      return;
-    }
-    const ok = moderatorResolveNow();
-    db.logAction(analyst.id, analyst.codename, "resolve-now");
-    narrate("MODERATE", `Moderator '${analyst.codename}' forced resolution of the active threat.`);
+    const ok = playAgain(analyst);
     sendJson(res, ok ? 200 : 400, { ok });
     return;
   }
@@ -369,6 +453,14 @@ const server = createServer(async (req, res) => {
     const analyst = resolveIdentity(req, res);
     const body = (await readJsonBody(req)) as Partial<{ severity: number; likelihood: number }>;
     const ok = castVote(analyst, voteMatch[1]!, Number(body.severity), Number(body.likelihood));
+    sendJson(res, ok ? 200 : 400, { ok });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/game/audit-vote") {
+    const analyst = resolveIdentity(req, res);
+    const body = (await readJsonBody(req)) as Partial<{ targetId: string }>;
+    const ok = castAuditVote(analyst, String(body.targetId ?? ""));
     sendJson(res, ok ? 200 : 400, { ok });
     return;
   }
@@ -399,11 +491,13 @@ server.on("upgrade", (req, socket, head) => {
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     hub.add(ws, analyst.id);
-    ws.send(JSON.stringify({ type: "hello", ...stateSnapshot(analyst) }));
-    narrate("JOIN", `User '${analyst.codename}' connected (SessionID: ${shortId(analyst.id)})`);
+    ws.send(JSON.stringify({ type: "hello", me: { id: analyst.id, codename: analyst.codename }, ...gameSnapshotFor(analyst.id) }));
+    narrate("JOIN", `User '${analyst.codename}' connected (Session: ${shortId(analyst.id)}).`);
+    broadcastLobby();
 
     ws.on("close", () => {
-      narrate("LEAVE", `User '${analyst.codename}' disconnected (SessionID: ${shortId(analyst.id)})`);
+      narrate("LEAVE", `User '${analyst.codename}' disconnected (Session: ${shortId(analyst.id)}).`);
+      broadcastLobby();
     });
 
     ws.on("message", (raw) => {
@@ -413,19 +507,14 @@ server.on("upgrade", (req, socket, head) => {
       } catch {
         return;
       }
-      if (message.type === "vote") {
+      if (message.type === "game:start") {
+        startGame(analyst);
+      } else if (message.type === "vote") {
         castVote(analyst, message.incidentId, message.severity, message.likelihood);
-      } else if (message.type === "incident:create") {
-        reportIncident(analyst, message.title, message.description, message.category);
-      } else if (message.type === "moderator:resolve-now") {
-        if (!db.isModerator(analyst.id)) {
-          db.logAction(analyst.id, analyst.codename, "resolve-now:denied");
-          narrate("DENIED", `User '${analyst.codename}' attempted a moderator-only action (resolve-now) without permission.`);
-          return;
-        }
-        moderatorResolveNow();
-        db.logAction(analyst.id, analyst.codename, "resolve-now");
-        narrate("MODERATE", `Moderator '${analyst.codename}' forced resolution of the active threat.`);
+      } else if (message.type === "audit:vote") {
+        castAuditVote(analyst, message.targetId);
+      } else if (message.type === "game:play-again") {
+        playAgain(analyst);
       }
     });
   });
@@ -433,9 +522,4 @@ server.on("upgrade", (req, socket, head) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   narrate("START", `Server listening on 0.0.0.0:${PORT}`);
-  // Leftover 'open' rows mean the process restarted (or ran under the old,
-  // pre-Focus-Mode code that allowed several at once); close all of them out
-  // against whatever votes they already have before starting the loop fresh.
-  for (const incident of db.getOpenIncidents()) finishIncident(incident.id);
-  startNextIncident();
 });

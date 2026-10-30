@@ -2,29 +2,56 @@ import { expect, inject, it } from "vitest";
 
 const baseUrl = inject("baseUrl");
 
-// The moderator is whichever analyst was created first, ever — in a running
-// app with any history at all, a brand-new visitor is never that analyst, so
-// this is a reliable way to exercise the denial path without needing to
-// reset the database.
-it("rejects a moderator-only action from a non-moderator analyst", async () => {
-  const first = await fetch(new URL("/", baseUrl));
-  const setCookie = first.headers.get("set-cookie");
-  const cookie = setCookie!.split(";")[0]!;
+async function analystCookie(): Promise<string> {
+  const res = await fetch(new URL("/", baseUrl));
+  return res.headers.get("set-cookie")!.split(";")[0]!;
+}
 
-  const meRes = await fetch(new URL("/api/me", baseUrl), { headers: { cookie } });
-  const me = (await meRes.json()) as { id: string; codename: string };
-  expect(me.id).toBeTruthy();
+// Starting a shift is gated on a real quorum of currently-connected
+// sessions, checked server-side against the live connection list — a lone
+// visitor hitting the route directly should never be able to force a start.
+it("rejects starting a shift without enough connected players", async () => {
+  const cookie = await analystCookie();
 
-  const resolveRes = await fetch(new URL("/api/moderator/resolve-now", baseUrl), {
+  const stateRes = await fetch(new URL("/api/game/state", baseUrl), { headers: { cookie } });
+  const stateBefore = (await stateRes.json()) as { phase: string; players?: { id: string }[] };
+
+  // Only meaningful to assert in a lobby with fewer than 3 live WS
+  // connections, which is the state a fresh spec run's HTTP-only client
+  // (no WS upgrade) finds the app in.
+  if (stateBefore.phase !== "lobby" || (stateBefore.players?.length ?? 0) >= 3) return;
+
+  const startRes = await fetch(new URL("/api/game/start", baseUrl), {
     method: "POST",
     headers: { cookie },
   });
-  expect(resolveRes.status, "a non-moderator hitting the moderator-only route should get a 403").toBe(403);
-  const body = (await resolveRes.json()) as { ok: boolean };
+  expect(startRes.status, "starting with fewer than 3 connected sessions should be rejected").toBe(400);
+  const body = (await startRes.json()) as { ok: boolean };
   expect(body.ok).toBe(false);
 });
 
-it("rejects the same action for an unauthenticated request", async () => {
-  const resolveRes = await fetch(new URL("/api/moderator/resolve-now", baseUrl), { method: "POST" });
-  expect(resolveRes.status).toBe(403);
+it("rejects a vote outside the active threat window", async () => {
+  const cookie = await analystCookie();
+
+  const voteRes = await fetch(new URL(`/api/incidents/not-a-real-incident/vote`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ severity: 4, likelihood: 3 }),
+  });
+  expect(voteRes.status, "a vote naming no active threat should be rejected, not just no-opped").toBe(400);
+});
+
+it("rejects an audit vote outside the audit phase", async () => {
+  const cookie = await analystCookie();
+
+  const stateRes = await fetch(new URL("/api/game/state", baseUrl), { headers: { cookie } });
+  const state = (await stateRes.json()) as { phase: string };
+  if (state.phase === "audit") return;
+
+  const auditRes = await fetch(new URL("/api/game/audit-vote", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ targetId: "someone" }),
+  });
+  expect(auditRes.status, "an audit vote outside the audit phase should be rejected").toBe(400);
 });

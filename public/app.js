@@ -1,9 +1,5 @@
-const ACTIVE_DURATION_MS = 15_000;
-const CRITICAL_THRESHOLD_MS = 5_000;
-
 // No audio files ship with the app, so tension sounds are synthesized with
-// the Web Audio API rather than fetched — nothing to fail loading mid-demo,
-// and the brief explicitly allows generated beeps/tones as the fallback.
+// the Web Audio API rather than fetched — nothing to fail loading mid-demo.
 // Browsers block audio before a user gesture, so the context is created
 // lazily on first click/keydown rather than at page load.
 const audio = {
@@ -47,29 +43,53 @@ function playBreachBuzzer() {
   playTone({ frequency: 100, duration: 0.5, type: "sawtooth", gain: 0.3, delay: 0.15 });
 }
 
+function playEjectBuzzer() {
+  playTone({ frequency: 90, duration: 0.6, type: "sawtooth", gain: 0.35 });
+  playTone({ frequency: 70, duration: 0.7, type: "sawtooth", gain: 0.3, delay: 0.2 });
+}
+
+const THREAT_DURATION_MS = 15_000;
+const AUDIT_DURATION_MS = 30_000;
+const CRITICAL_THRESHOLD_MS = 5_000;
+
 const state = {
   me: null,
-  role: "analyst",
+  phase: "lobby",
+  role: "ANALYST",
+  players: [],
+  readyToStart: false,
   active: null,
-  queueLength: 0,
-  resolvedHistory: [],
-  leaderboard: new Map(),
+  threatIndex: 0,
+  totalThreats: 3,
+  deadline: 0,
+  auditCandidates: [],
+  auditTally: {},
+  myAuditVote: null,
+  result: null,
 };
 
 const el = {
   me: document.getElementById("me"),
   roleBanner: document.getElementById("role-banner"),
+  lobbySection: document.getElementById("lobby"),
+  lobbyStatus: document.getElementById("lobby-status"),
+  lobbyPlayers: document.getElementById("lobby-players"),
+  startShift: document.getElementById("start-shift"),
+  activeSection: document.getElementById("active-threat"),
+  threatProgress: document.getElementById("threat-progress"),
   activeCard: document.getElementById("active-card"),
-  noActive: document.getElementById("no-active"),
   countdown: document.getElementById("countdown"),
   countdownNumber: document.getElementById("countdown-number"),
   countdownFill: document.getElementById("countdown-fill"),
-  queueStatus: document.getElementById("queue-status"),
-  historyList: document.getElementById("history-list"),
-  leaderboardBody: document.getElementById("leaderboard-body"),
-  reportForm: document.getElementById("report-form"),
-  reportFeedback: document.getElementById("report-feedback"),
-  resolveNow: document.getElementById("resolve-now"),
+  auditSection: document.getElementById("audit"),
+  auditCountdown: document.getElementById("audit-countdown"),
+  auditCountdownNumber: document.getElementById("audit-countdown-number"),
+  auditCountdownFill: document.getElementById("audit-countdown-fill"),
+  auditCandidates: document.getElementById("audit-candidates"),
+  resultsSection: document.getElementById("results"),
+  resultsBody: document.getElementById("results-body"),
+  playAgain: document.getElementById("play-again"),
+  revokedOverlay: document.getElementById("revoked-overlay"),
 };
 
 function escapeHtml(s) {
@@ -109,25 +129,42 @@ function riskMatrixHtml(incident, mySeverity, myLikelihood) {
 }
 
 function renderMe() {
-  el.me.textContent = state.me
-    ? `You are: ${state.me.codename} · ${state.me.isModerator ? "Moderator" : "Analyst"}`
-    : "connecting…";
-  // Cosmetic only — the server is the actual gate on the resolve-now
-  // request, so hiding this button is convenience, not the enforcement.
-  el.resolveNow.hidden = !state.me?.isModerator;
+  el.me.textContent = state.me ? `You are: ${state.me.codename}` : "connecting…";
 }
 
-// The role is secret, per-round flavor — it never changes what the server
-// will accept from this analyst, only what's shown to them.
+// The role is secret per-round flavor: it never changes what the server will
+// accept from this analyst, only what's shown to them.
 function renderRole() {
+  if (state.phase === "lobby") {
+    el.roleBanner.hidden = true;
+    return;
+  }
   el.roleBanner.hidden = false;
-  if (state.role === "saboteur") {
-    el.roleBanner.textContent = "SECRET ROLE: SABOTEUR — Drag the consensus off target!";
+  if (state.role === "INSIDER_THREAT") {
+    el.roleBanner.textContent = "SECRET ROLE: INSIDER THREAT — Blend in. Drag the room off target.";
     el.roleBanner.className = "role-banner saboteur";
   } else {
     el.roleBanner.textContent = "ROLE: ANALYST";
     el.roleBanner.className = "role-banner analyst";
   }
+}
+
+function renderSections() {
+  el.lobbySection.hidden = state.phase !== "lobby";
+  el.activeSection.hidden = state.phase !== "threat";
+  el.auditSection.hidden = state.phase !== "audit";
+  el.resultsSection.hidden = state.phase !== "resolved";
+}
+
+function renderLobby() {
+  if (state.phase !== "lobby") return;
+  el.lobbyStatus.textContent = state.readyToStart
+    ? `${state.players.length} analysts connected. Ready to start.`
+    : `${state.players.length} analyst${state.players.length === 1 ? "" : "s"} connected — need at least 3 to start a shift.`;
+  el.lobbyPlayers.innerHTML = state.players
+    .map((p) => `<li>${escapeHtml(p.codename)}${p.id === state.me?.id ? " (you)" : ""}</li>`)
+    .join("");
+  el.startShift.disabled = !state.readyToStart;
 }
 
 function activeCardHtml(incident) {
@@ -136,15 +173,15 @@ function activeCardHtml(incident) {
   const likelihood = myVote?.likelihood ?? 5;
   // One vote per analyst per threat is enforced server-side; a second
   // attempt gets rejected, not applied as an update. Disabling the controls
-  // once a vote exists keeps the UI from inviting an action the server
-  // will refuse — this is convenience, not the actual enforcement.
+  // once a vote exists keeps the UI from inviting an action the server will
+  // refuse — this is convenience, not the actual enforcement.
   const locked = !!myVote;
   return `
     <article class="threat">
       <div class="threat-info">
         <h3>${escapeHtml(incident.title)}</h3>
         <p>${escapeHtml(incident.description)}</p>
-        <p class="meta">${incident.category} · ${incident.source === "analyst" ? "reported by an analyst" : "auto-detected"} · ${incident.votes.length} vote${incident.votes.length === 1 ? "" : "s"}</p>
+        <p class="meta">${incident.category} · ${incident.votes.length} vote${incident.votes.length === 1 ? "" : "s"}</p>
       </div>
       <div class="vote-controls">
         ${riskMatrixHtml(incident, severity, likelihood)}
@@ -160,14 +197,9 @@ function activeCardHtml(incident) {
 }
 
 function renderActive() {
-  const incident = state.active;
-  el.noActive.hidden = !!incident;
-  if (!incident) {
-    el.activeCard.innerHTML = "";
-    return;
-  }
-
-  el.activeCard.innerHTML = activeCardHtml(incident);
+  if (state.phase !== "threat" || !state.active) return;
+  el.threatProgress.textContent = `(${state.threatIndex + 1} of ${state.totalThreats})`;
+  el.activeCard.innerHTML = activeCardHtml(state.active);
 
   const sevInput = el.activeCard.querySelector("[data-sev]");
   const likeInput = el.activeCard.querySelector("[data-like]");
@@ -190,11 +222,53 @@ function renderActive() {
   el.activeCard.querySelector("[data-vote]").addEventListener("click", () => {
     send({
       type: "vote",
-      incidentId: incident.id,
+      incidentId: state.active.id,
       severity: Number(sevInput.value),
       likelihood: Number(likeInput.value),
     });
   });
+}
+
+function renderAuditCandidates() {
+  if (state.phase !== "audit") return;
+  el.auditCandidates.innerHTML = state.auditCandidates
+    .map((p) => {
+      const count = state.auditTally[p.id] ?? 0;
+      const isMe = p.id === state.me?.id;
+      const votedForThem = state.myAuditVote === p.id;
+      return `
+        <li>
+          <button type="button" class="audit-candidate${votedForThem ? " voted" : ""}" data-target="${p.id}" ${state.myAuditVote ? "disabled" : ""}>
+            <span class="audit-codename">${escapeHtml(p.codename)}${isMe ? " (you)" : ""}</span>
+            <span class="audit-votes">${count} vote${count === 1 ? "" : "s"}</span>
+          </button>
+        </li>`;
+    })
+    .join("");
+
+  el.auditCandidates.querySelectorAll("[data-target]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      send({ type: "audit:vote", targetId: btn.dataset.target });
+    });
+  });
+}
+
+function renderResults() {
+  if (state.phase !== "resolved" || !state.result) return;
+  const r = state.result;
+  const ejectedLine = r.ejectedCodename
+    ? `<p><strong>${escapeHtml(r.ejectedCodename)}</strong> was ejected. They <strong>${r.wasInsider ? "WERE" : "WERE NOT"}</strong> the Insider Threat.</p>`
+    : `<p>No majority was reached — nobody was ejected.</p>`;
+  el.resultsBody.innerHTML = `
+    ${ejectedLine}
+    <p>The Insider Threat was <strong>${escapeHtml(r.insiderCodename)}</strong>.</p>
+    <p class="winner-line">${r.winner === "ANALYSTS" ? "ANALYSTS WIN" : "INSIDER THREAT WINS"}</p>
+  `;
+}
+
+function renderRevokedOverlay() {
+  const revoked = state.phase === "resolved" && state.result?.youWereRevoked;
+  el.revokedOverlay.hidden = !revoked;
 }
 
 let countdownTimer = null;
@@ -203,19 +277,16 @@ let lastTickedSecond = null;
 function renderCountdown() {
   clearInterval(countdownTimer);
   lastTickedSecond = null;
-  if (!state.active) {
-    el.countdownNumber.textContent = "–";
-    el.countdownFill.style.width = "0%";
+  if (state.phase !== "threat") {
     el.countdown.classList.remove("critical");
     return;
   }
 
-  const deadline = state.active.createdAt + ACTIVE_DURATION_MS;
   const tick = () => {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = Math.max(0, state.deadline - Date.now());
     const remainingSeconds = Math.ceil(remainingMs / 1000);
     el.countdownNumber.textContent = String(remainingSeconds);
-    el.countdownFill.style.width = `${(remainingMs / ACTIVE_DURATION_MS) * 100}%`;
+    el.countdownFill.style.width = `${(remainingMs / THREAT_DURATION_MS) * 100}%`;
     el.countdown.classList.toggle("critical", remainingMs > 0 && remainingMs <= CRITICAL_THRESHOLD_MS);
 
     if (remainingSeconds <= 5 && remainingSeconds >= 1 && remainingSeconds !== lastTickedSecond) {
@@ -228,67 +299,78 @@ function renderCountdown() {
   countdownTimer = setInterval(tick, 200);
 }
 
-function renderQueueStatus() {
-  el.queueStatus.textContent =
-    state.queueLength > 0
-      ? `${state.queueLength} report${state.queueLength === 1 ? "" : "s"} queued behind the current threat.`
-      : "Your report will go live as soon as the current threat resolves.";
+let auditCountdownTimer = null;
+let lastAuditTickedSecond = null;
+
+function renderAuditCountdown() {
+  clearInterval(auditCountdownTimer);
+  lastAuditTickedSecond = null;
+  if (state.phase !== "audit") return;
+
+  const tick = () => {
+    const remainingMs = Math.max(0, state.deadline - Date.now());
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+    el.auditCountdownNumber.textContent = String(remainingSeconds);
+    el.auditCountdownFill.style.width = `${(remainingMs / AUDIT_DURATION_MS) * 100}%`;
+    el.auditCountdown.classList.toggle("critical", remainingMs > 0 && remainingMs <= CRITICAL_THRESHOLD_MS);
+
+    if (remainingSeconds <= 5 && remainingSeconds >= 1 && remainingSeconds !== lastAuditTickedSecond) {
+      lastAuditTickedSecond = remainingSeconds;
+      playTick();
+    }
+    if (remainingMs <= 0) clearInterval(auditCountdownTimer);
+  };
+  tick();
+  auditCountdownTimer = setInterval(tick, 200);
 }
 
-function outcomeBadge(outcome) {
-  const label = { true_positive: "true positive", false_positive: "false positive", unresolved: "unresolved", ignored: "ignored" }[
-    outcome
-  ];
-  return `<span class="badge ${outcome}">${label}</span>`;
+function renderAll() {
+  renderMe();
+  renderRole();
+  renderSections();
+  renderLobby();
+  renderActive();
+  renderCountdown();
+  renderAuditCandidates();
+  renderAuditCountdown();
+  renderResults();
+  renderRevokedOverlay();
 }
 
-function renderHistory() {
-  el.historyList.innerHTML = state.resolvedHistory
-    .map((incident) => {
-      const stats =
-        incident.outcome === "ignored"
-          ? "no votes cast"
-          : `consensus score ${incident.consensusScore} · severity ${incident.consensusSeverity?.toFixed(1)} · likelihood ${incident.consensusLikelihood?.toFixed(1)}`;
-      return `
-      <article class="incident" style="grid-template-columns: 1fr;">
-        <div>
-          <h3>${escapeHtml(incident.title)} ${outcomeBadge(incident.outcome)}</h3>
-          <p class="meta">${stats}</p>
-        </div>
-      </article>`;
-    })
-    .join("");
-}
-
-function renderLeaderboard() {
-  const rows = [...state.leaderboard.values()].sort((a, b) => b.votesCast - a.votesCast);
-  el.leaderboardBody.innerHTML = rows
-    .map(
-      (entry) => `
-      <tr>
-        <td>${escapeHtml(entry.codename)}</td>
-        <td>${entry.votesCast}</td>
-        <td>${entry.agreementRate === null ? "—" : `${Math.round(entry.agreementRate * 100)}%`}</td>
-        <td>${entry.insiderFlagged ? '<span class="badge insider">possible insider</span>' : ""}</td>
-      </tr>`,
-    )
-    .join("");
+function applySnapshot(snapshot) {
+  state.phase = snapshot.phase;
+  if (snapshot.phase === "lobby") {
+    state.players = snapshot.players;
+    state.readyToStart = snapshot.readyToStart;
+  } else if (snapshot.phase === "threat") {
+    state.role = snapshot.role;
+    state.active = snapshot.active;
+    state.threatIndex = snapshot.threatIndex;
+    state.totalThreats = snapshot.totalThreats;
+    state.deadline = snapshot.deadline;
+  } else if (snapshot.phase === "audit") {
+    state.role = snapshot.role;
+    state.deadline = snapshot.deadline;
+    state.auditCandidates = snapshot.candidates;
+    state.auditTally = snapshot.tally;
+    state.myAuditVote = null;
+  } else if (snapshot.phase === "resolved") {
+    state.role = snapshot.role;
+    state.result = {
+      ejectedId: snapshot.ejectedId,
+      ejectedCodename: snapshot.ejectedCodename,
+      wasInsider: snapshot.wasInsider,
+      winner: snapshot.winner,
+      insiderCodename: snapshot.insiderCodename,
+      youWereRevoked: snapshot.youWereRevoked,
+    };
+  }
 }
 
 function applyHello(msg) {
   state.me = msg.me;
-  state.role = msg.role;
-  state.active = msg.active;
-  state.queueLength = msg.queueLength;
-  state.resolvedHistory = msg.recentResolved;
-  state.leaderboard = new Map(msg.leaderboard.map((e) => [e.id, e]));
-  renderMe();
-  renderRole();
-  renderActive();
-  renderCountdown();
-  renderQueueStatus();
-  renderHistory();
-  renderLeaderboard();
+  applySnapshot(msg);
+  renderAll();
 }
 
 function applyMessage(msg) {
@@ -296,10 +378,23 @@ function applyMessage(msg) {
     case "hello":
       applyHello(msg);
       break;
-    case "incident:new":
+    case "lobby:update":
+      state.phase = "lobby";
+      state.players = msg.players;
+      state.readyToStart = msg.readyToStart;
+      renderAll();
+      break;
+    case "game:role":
+      state.role = msg.role;
+      renderRole();
+      break;
+    case "threat:new":
+      state.phase = "threat";
       state.active = msg.incident;
-      renderActive();
-      renderCountdown();
+      state.threatIndex = msg.threatIndex;
+      state.totalThreats = msg.totalThreats;
+      state.deadline = msg.deadline;
+      renderAll();
       break;
     case "vote:cast": {
       if (state.active?.id !== msg.incidentId) break;
@@ -318,33 +413,50 @@ function applyMessage(msg) {
       renderActive();
       break;
     }
-    case "incident:resolved":
-      if (state.active?.id === msg.incident.id) state.active = null;
-      state.resolvedHistory.unshift(msg.incident);
-      state.resolvedHistory = state.resolvedHistory.slice(0, 20);
-      renderActive();
-      renderCountdown();
-      renderHistory();
-      // Reuses the server-computed consensusScore (same >=60 threshold
-      // resolveConsensus uses for "agreement reached") rather than
-      // re-deriving spread client-side — consensus math stays in
-      // server/consensus.ts.
+    case "threat:resolved":
       if (msg.incident.outcome !== "ignored") {
         if ((msg.incident.consensusScore ?? 0) >= 60) playConsensusDing();
         else playBreachBuzzer();
       }
       break;
-    case "analyst:stats":
-      state.leaderboard.set(msg.entry.id, msg.entry);
-      renderLeaderboard();
+    case "audit:start":
+      state.phase = "audit";
+      state.deadline = msg.deadline;
+      state.auditCandidates = msg.candidates;
+      state.auditTally = {};
+      state.myAuditVote = null;
+      renderAll();
       break;
-    case "queue:update":
-      state.queueLength = msg.queueLength;
-      renderQueueStatus();
+    case "audit:tally":
+      state.auditTally = msg.tally;
+      if (msg.voterId === state.me?.id) state.myAuditVote = msg.targetId;
+      renderAuditCandidates();
       break;
-    case "role:assign":
-      state.role = msg.role;
-      renderRole();
+    case "game:ejected":
+      state.phase = "resolved";
+      state.result = {
+        ejectedId: msg.ejectedId,
+        ejectedCodename: msg.ejectedCodename,
+        wasInsider: msg.wasInsider,
+        winner: msg.winner,
+        insiderCodename: msg.insiderCodename,
+        youWereRevoked: msg.ejectedId === state.me?.id,
+      };
+      renderAll();
+      if (msg.wasInsider) playConsensusDing();
+      else playEjectBuzzer();
+      break;
+    case "game:revoked":
+      renderRevokedOverlay();
+      break;
+    case "game:reset":
+      state.phase = "lobby";
+      state.role = "ANALYST";
+      state.active = null;
+      state.threatIndex = 0;
+      state.result = null;
+      state.myAuditVote = null;
+      renderAll();
       break;
   }
 }
@@ -367,26 +479,12 @@ function connect() {
   });
 }
 
-let feedbackTimer = null;
-
-el.reportForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  send({
-    type: "incident:create",
-    title: document.getElementById("report-title").value,
-    description: document.getElementById("report-description").value,
-    category: document.getElementById("report-category").value,
-  });
-  el.reportForm.reset();
-
-  clearTimeout(feedbackTimer);
-  el.reportFeedback.textContent = "Report queued — it'll go live once earlier threats resolve.";
-  el.reportFeedback.hidden = false;
-  feedbackTimer = setTimeout(() => (el.reportFeedback.hidden = true), 4000);
+el.startShift.addEventListener("click", () => {
+  send({ type: "game:start" });
 });
 
-el.resolveNow.addEventListener("click", () => {
-  send({ type: "moderator:resolve-now" });
+el.playAgain.addEventListener("click", () => {
+  send({ type: "game:play-again" });
 });
 
 // Hitting `/` first (a normal page load) is what sets the identity cookie

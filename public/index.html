@@ -7,6 +7,50 @@
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
+    <div id="intro-overlay" class="intro-overlay" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+      <div class="intro-panel">
+        <p class="intro-eyebrow">// incoming transmission</p>
+        <h1 id="intro-title">Mission Briefing</h1>
+        <p class="intro-lede">
+          You've just logged into the <strong>Cyber Threat Consensus Board</strong> — a
+          live Security Operations Center (SOC) social-deduction game. One
+          connected analyst is secretly the <strong>Insider Threat</strong>. Everyone
+          else just wants to triage three incidents and figure out who it is
+          before the shift ends.
+        </p>
+
+        <h2>How a shift plays out</h2>
+        <ol class="intro-list">
+          <li>Wait in the lobby until at least 3 analysts have connected, then anyone can click <strong>Start Shift</strong>.</li>
+          <li>The server secretly assigns exactly one connected analyst as the <strong>Insider Threat</strong>. Everyone else is an <strong>Analyst</strong>. Your role banner shows yours and only yours.</li>
+          <li>Three threats go active, one after another, each with a 15-second clock. Drag <strong>Severity</strong> and <strong>Likelihood</strong> (1&ndash;10) and cast your vote &mdash; one vote per threat, it locks in once cast.</li>
+          <li>Once all three resolve, a 30-second <strong>Security Audit</strong> begins: the risk matrix disappears and a list of every connected codename appears instead.</li>
+          <li>Click a codename to vote to <strong>Revoke</strong> them. Whoever gets the most votes when the clock hits zero gets ejected.</li>
+        </ol>
+
+        <h2>Winning</h2>
+        <ul class="intro-list">
+          <li>If the room ejects the <strong>Insider Threat</strong> — Analysts win.</li>
+          <li>If an innocent Analyst gets ejected (or no one does) — the <strong>Insider Threat</strong> wins.</li>
+          <li>Getting ejected locks your screen with a full-screen <strong>CREDENTIALS REVOKED</strong> message. You'll still see how it all played out.</li>
+        </ul>
+
+        <h2>What to do</h2>
+        <ul class="intro-list">
+          <li>If you're the Insider Threat, nothing you submit looks any different &mdash; vote convincingly and blend in.</li>
+          <li>If you're an Analyst, watch how people vote across all three threats for anything that looks off, then make your case out loud before the audit clock runs out.</li>
+          <li>This is a social game first: the real detective work happens in conversation in the room, not in the UI.</li>
+        </ul>
+
+        <label class="intro-ack">
+          <input type="checkbox" id="intro-ack-checkbox" />
+          I've read the briefing and I'm ready to triage.
+        </label>
+
+        <button type="button" id="intro-start" disabled>Enter the SOC</button>
+      </div>
+    </div>
+
     <header>
       <h1>Cyber Threat Consensus Board</h1>
       <p id="me" class="me">connecting&hellip;</p>
@@ -16,67 +60,51 @@
     <main>
       <p id="role-banner" class="role-banner" role="status" hidden></p>
 
-      <section id="active-threat" aria-label="Active threat">
+      <section id="lobby" aria-label="Lobby">
+        <h2>Lobby</h2>
+        <p id="lobby-status" class="muted"></p>
+        <ul id="lobby-players" class="lobby-players"></ul>
+        <button type="button" id="start-shift" disabled>Start Shift</button>
+      </section>
+
+      <section id="active-threat" aria-label="Active threat" hidden>
         <div class="active-head">
-          <h2>Active threat</h2>
+          <h2>Active threat <span id="threat-progress" class="muted"></span></h2>
           <div id="countdown" class="countdown" role="timer">
             <span id="countdown-number">15</span>
             <div class="countdown-bar"><div id="countdown-fill"></div></div>
           </div>
         </div>
-        <button type="button" id="resolve-now" hidden>Resolve now (moderator)</button>
-        <p id="no-active" class="muted" hidden>Next threat incoming&hellip;</p>
         <div id="active-card"></div>
       </section>
 
-      <section id="report" aria-label="Report a threat">
-        <h2>Report a threat</h2>
-        <p id="queue-status" class="muted"></p>
-        <form id="report-form">
-          <label>
-            Title
-            <input type="text" id="report-title" maxlength="200" required />
-          </label>
-          <label>
-            Category
-            <select id="report-category">
-              <option value="login">Login</option>
-              <option value="exfiltration">Exfiltration</option>
-              <option value="malware">Malware</option>
-              <option value="network">Network</option>
-              <option value="insider">Insider</option>
-            </select>
-          </label>
-          <label>
-            Description
-            <textarea id="report-description" maxlength="1000" required></textarea>
-          </label>
-          <button type="submit">Submit incident</button>
-        </form>
-        <p id="report-feedback" class="muted" hidden></p>
+      <section id="audit" aria-label="Security audit" hidden>
+        <div class="active-head">
+          <h2>Security audit &mdash; vote to revoke</h2>
+          <div id="audit-countdown" class="countdown" role="timer">
+            <span id="audit-countdown-number">30</span>
+            <div class="countdown-bar"><div id="audit-countdown-fill"></div></div>
+          </div>
+        </div>
+        <p class="muted">Click a codename to cast your revoke vote. One vote per analyst.</p>
+        <ul id="audit-candidates" class="audit-candidates"></ul>
       </section>
 
-      <section id="leaderboard" aria-label="Analyst leaderboard">
-        <h2>Analysts</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Codename</th>
-              <th>Votes</th>
-              <th>Agreement</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="leaderboard-body"></tbody>
-        </table>
-      </section>
-
-      <section id="history" aria-label="Resolved incident history">
-        <h2>Resolved history</h2>
-        <div id="history-list"></div>
+      <section id="results" aria-label="Shift results" hidden>
+        <h2>Shift results</h2>
+        <div id="results-body"></div>
+        <button type="button" id="play-again">Start new shift</button>
       </section>
     </main>
 
+    <div id="revoked-overlay" class="revoked-overlay" hidden>
+      <div class="revoked-message">
+        <p>[ CREDENTIALS REVOKED ]</p>
+        <p>ACCESS DENIED</p>
+      </div>
+    </div>
+
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/intro.js"></script>
   </body>
 </html>
