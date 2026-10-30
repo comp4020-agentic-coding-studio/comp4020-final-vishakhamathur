@@ -28,6 +28,19 @@ course instead.
   explicitly a first draft (see `PROCESS.md`); changing the thresholds or
   the algorithm is fine, but keep it as pure functions over votes, not
   inlined into request handlers, so it stays testable and explainable.
+- **Every round-scoped authorization check reads server state, never a
+  client's claim.** Starting a shift, casting a triage vote, and casting an
+  audit vote are each gated on something the server itself tracks (live
+  connection count, an existing `(incident, analyst)` vote row, a round
+  already having a recorded audit vote) — never a field the request body
+  asserts. A new gated action follows the same pattern, and its denial gets
+  both an `action_log` row and a `narrate()` line, matching the log tag
+  format `PROCESS.md` documents.
+- **The round is in-memory, on purpose; identity and the log are not.** A
+  shift's phase/role/votes-in-progress reset on restart by design — don't
+  add persistence for round state without updating README's claim about
+  what survives a restart first. Identity (`analysts`) and `action_log`
+  stay in SQLite under `/data` exactly as before.
 - **`PROCESS.md` gets rewritten each crit, not appended to.** It should
   always read as the current, true account of the stack and its trade-offs,
   not a changelog.
