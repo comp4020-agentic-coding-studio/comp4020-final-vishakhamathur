@@ -14,7 +14,7 @@ import type { Analyst, ClientMessage, GamePhase, GameRole, GameSnapshot, PlayerI
 
 const PORT = Number(process.env.PORT ?? 8080);
 const DATA_DIR = process.env.DATA_DIR ?? "./data";
-const THREAT_DURATION_MS = Number(process.env.THREAT_DURATION_MS ?? 15_000);
+const THREAT_DURATION_MS = Number(process.env.THREAT_DURATION_MS ?? 20_000);
 const AUDIT_DURATION_MS = Number(process.env.AUDIT_DURATION_MS ?? 30_000);
 const TOTAL_THREATS = 3;
 const MIN_PLAYERS = 3;
@@ -171,7 +171,13 @@ function startGame(initiator: Analyst): boolean {
 function startThreat(): void {
   gamePhase = "threat";
   const threat = generateThreat();
-  const incident = db.createIncident({ id: randomUUID(), title: threat.title, description: threat.description, category: threat.category });
+  const incident = db.createIncident({
+    id: randomUUID(),
+    title: threat.title,
+    description: threat.description,
+    hint: threat.hint,
+    category: threat.category,
+  });
   currentIncidentId = incident.id;
   phaseDeadline = Date.now() + THREAT_DURATION_MS;
 

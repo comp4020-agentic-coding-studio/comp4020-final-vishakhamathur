@@ -29,6 +29,10 @@ export interface Incident {
   id: string;
   title: string;
   description: string;
+  // A plain-language gloss of the jargon in `description`, shown to
+  // players so judging severity/likelihood doesn't require a security
+  // background — see server/generator.ts.
+  hint: string;
   category: IncidentCategory;
   source: IncidentSource;
   createdBy: string | null;

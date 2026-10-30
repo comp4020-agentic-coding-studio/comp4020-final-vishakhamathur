@@ -23,7 +23,7 @@
         <ol class="intro-list">
           <li>Wait in the lobby until at least 3 analysts have connected, then anyone can click <strong>Start Shift</strong>.</li>
           <li>The server secretly assigns exactly one connected analyst as the <strong>Insider Threat</strong>. Everyone else is an <strong>Analyst</strong>. Your role banner shows yours and only yours.</li>
-          <li>Three threats go active, one after another, each with a 15-second clock. Drag <strong>Severity</strong> and <strong>Likelihood</strong> (1&ndash;10) and cast your vote &mdash; one vote per threat, it locks in once cast.</li>
+          <li>Three threats go active, one after another, each with a 20-second clock. Drag <strong>Severity</strong> and <strong>Likelihood</strong> (1&ndash;10) and cast your vote &mdash; one vote per threat, it locks in once cast.</li>
           <li>Once all three resolve, a 30-second <strong>Security Audit</strong> begins: the risk matrix disappears and a list of every connected codename appears instead.</li>
           <li>Click a codename to vote to <strong>Revoke</strong> them. Whoever gets the most votes when the clock hits zero gets ejected.</li>
         </ol>
@@ -41,6 +41,18 @@
           <li>If you're an Analyst, watch how people vote across all three threats for anything that looks off, then make your case out loud before the audit clock runs out.</li>
           <li>This is a social game first: the real detective work happens in conversation in the room, not in the UI.</li>
         </ul>
+
+        <h2>Judging a threat (no security background needed)</h2>
+        <p class="intro-lede">
+          Each threat has two things to rate, and they're independent questions:
+        </p>
+        <ul class="intro-list">
+          <li><strong>Likelihood</strong> &mdash; how likely is this actually an attack, versus an innocent explanation (a forgotten password, a late backup job, someone traveling)?</li>
+          <li><strong>Severity</strong> &mdash; if it <em>is</em> real, how bad would it be? A login spike on a personal account is low-stakes; a database being copied out is not.</li>
+        </ul>
+        <p class="intro-lede">
+          Every threat also shows a plain-English hint under the technical description &mdash; it explains what's going on, not what to vote. The judgment call is still yours.
+        </p>
 
         <label class="intro-ack">
           <input type="checkbox" id="intro-ack-checkbox" />

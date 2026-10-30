@@ -10,9 +10,8 @@ catch them before the shift ends.
 ## Who this is for
 
 A small, synchronous room: four or five people in a crit room, friends on
-the same link at once. Built to be narrated live — a presenter reads the
-terminal aloud while the room plays — not used solo. Software for an
-afternoon together, not a shift roster.
+the same link at once. Built to be narrated live, not used solo — software
+for an afternoon together, not a shift roster.
 
 ## What "good" means here
 
@@ -39,10 +38,12 @@ Open the app and you're assigned a codename (e.g. "Agent Crimson Hawk-7")
 **Insider Threat**; everyone else is an **Analyst**, and each person sees
 only their own role.
 
-Three threats run one after another with a 15-second countdown each. Drag
-**Severity** and **Likelihood** (1–10) and click **Cast vote** — one vote
-per analyst per threat, server-enforced, locking in once cast. Votes land
-on the shared risk matrix live for everyone watching.
+Three threats run one after another with a 20-second countdown, each with
+a plain-English hint beside the jargon so judging doesn't need a security
+background. Drag **Severity** and **Likelihood** (1–10) and click
+**Cast vote** — one vote per analyst per threat, server-enforced, locking
+in once cast. Votes land on the shared risk matrix live for everyone
+watching.
 
 Once all three resolve, a 30-second **Security Audit** begins: the matrix
 is replaced by a list of connected codenames. Click one to vote to
@@ -65,10 +66,10 @@ and the full log tag list.
 
 ## What this draft doesn't claim
 
-Each threat's true/false-positive call is a simple first pass
-(`PROCESS.md`) — mostly flavor here, since the real objective is finding
-the Insider Threat, not getting every verdict right. No accounts; identity
-is just a signed cookie.
+Each threat's true/false-positive call is a simple first pass — mostly
+flavor here, since the real objective is finding the Insider Threat, not
+getting every verdict right. No accounts; identity is just a signed
+cookie.
 
 ## Sources
 

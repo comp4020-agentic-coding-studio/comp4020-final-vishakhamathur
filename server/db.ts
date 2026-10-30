@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS incidents (
   id                    TEXT PRIMARY KEY,
   title                 TEXT NOT NULL,
   description           TEXT NOT NULL,
+  hint                  TEXT NOT NULL DEFAULT '',
   category              TEXT NOT NULL,
   source                TEXT NOT NULL,
   created_by            TEXT,
@@ -58,6 +59,7 @@ interface IncidentRow {
   id: string;
   title: string;
   description: string;
+  hint: string;
   category: string;
   source: string;
   created_by: string | null;
@@ -87,6 +89,7 @@ function incidentFromRow(row: IncidentRow): Incident {
     id: row.id,
     title: row.title,
     description: row.description,
+    hint: row.hint,
     category: row.category as IncidentCategory,
     source: row.source as Incident["source"],
     createdBy: row.created_by,
@@ -119,6 +122,19 @@ export class Db {
     this.raw.exec("PRAGMA journal_mode = WAL;");
     this.raw.exec("PRAGMA foreign_keys = ON;");
     this.raw.exec(SCHEMA);
+    this.migrate();
+  }
+
+  // `CREATE TABLE IF NOT EXISTS` doesn't retroactively add columns to a
+  // table that already exists — the deployed app's /data volume already has
+  // an `incidents` table from before `hint` existed, so that column is
+  // added here if missing, rather than assuming every environment starts
+  // from a fresh database.
+  private migrate(): void {
+    const columns = this.raw.prepare("PRAGMA table_info(incidents)").all() as unknown as { name: string }[];
+    if (!columns.some((c) => c.name === "hint")) {
+      this.raw.exec("ALTER TABLE incidents ADD COLUMN hint TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   getAnalyst(id: string): Analyst | undefined {
@@ -145,18 +161,19 @@ export class Db {
       .run(analystId, codename, action, detail ?? null, at);
   }
 
-  createIncident(input: { id: string; title: string; description: string; category: IncidentCategory }): Incident {
+  createIncident(input: { id: string; title: string; description: string; hint: string; category: IncidentCategory }): Incident {
     const createdAt = Date.now();
     this.raw
       .prepare(
-        `INSERT INTO incidents (id, title, description, category, source, created_by, created_at, status)
-         VALUES (?, ?, ?, ?, 'generator', NULL, ?, 'open')`,
+        `INSERT INTO incidents (id, title, description, hint, category, source, created_by, created_at, status)
+         VALUES (?, ?, ?, ?, ?, 'generator', NULL, ?, 'open')`,
       )
-      .run(input.id, input.title, input.description, input.category, createdAt);
+      .run(input.id, input.title, input.description, input.hint, input.category, createdAt);
     return {
       id: input.id,
       title: input.title,
       description: input.description,
+      hint: input.hint,
       category: input.category,
       source: "generator",
       createdBy: null,

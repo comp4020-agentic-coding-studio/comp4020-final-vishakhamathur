@@ -48,7 +48,7 @@ function playEjectBuzzer() {
   playTone({ frequency: 70, duration: 0.7, type: "sawtooth", gain: 0.3, delay: 0.2 });
 }
 
-const THREAT_DURATION_MS = 15_000;
+const THREAT_DURATION_MS = 20_000;
 const AUDIT_DURATION_MS = 30_000;
 const CRITICAL_THRESHOLD_MS = 5_000;
 
@@ -181,6 +181,7 @@ function activeCardHtml(incident) {
       <div class="threat-info">
         <h3>${escapeHtml(incident.title)}</h3>
         <p>${escapeHtml(incident.description)}</p>
+        <p class="hint">${escapeHtml(incident.hint)}</p>
         <p class="meta">${incident.category} · ${incident.votes.length} vote${incident.votes.length === 1 ? "" : "s"}</p>
       </div>
       <div class="vote-controls">
